@@ -1,0 +1,144 @@
+models:
+  - claude-sonnet-4.5
+conversations:
+  - messages:
+      - role: system
+        content: ${system}
+      - role: user
+        content: Write a short four-line poem about mountains.
+      - role: assistant
+        content: |-
+          Peaks that pierce the endless sky,
+          Standing tall where eagles fly,
+          Silent giants, ancient stone,
+          Watching over earth alone.
+  - messages:
+      - role: system
+        content: ${system}
+      - role: user
+        content: Write a short four-line poem about rivers.
+      - role: assistant
+        content: |-
+          Rivers flow from mountain heights,
+          Carving paths through ancient stone,
+          Whispering tales of days and nights,
+          To the sea they journey home.
+  - messages:
+      - role: system
+        content: ${system}
+      - role: user
+        content: Call get_topic twice to get two different topics, then launch two background general-purpose subagents in
+          parallel (one per topic) to each write a short four-line poem about their assigned topic. Use read_agent to
+          wait for both results and show them to me.
+      - role: assistant
+        content: I'll get two topics, launch two poem-writing agents in parallel, and retrieve their results.
+        tool_calls:
+          - id: toolcall_0
+            type: function
+            function:
+              name: report_intent
+              arguments: '{"intent":"Getting poem topics"}'
+          - id: toolcall_1
+            type: function
+            function:
+              name: get_topic
+              arguments: "{}"
+          - id: toolcall_2
+            type: function
+            function:
+              name: get_topic
+              arguments: "{}"
+      - role: tool
+        tool_call_id: toolcall_0
+        content: Intent logged
+      - role: tool
+        tool_call_id: toolcall_1
+        content: mountains
+      - role: tool
+        tool_call_id: toolcall_2
+        content: rivers
+      - role: assistant
+        content: Great! I got "mountains" and "rivers" as topics. Now launching two background agents to write poems.
+        tool_calls:
+          - id: toolcall_3
+            type: function
+            function:
+              name: task
+              arguments: '{"agent_type":"general-purpose","description":"Write mountains poem","mode":"background","prompt":"Write a
+                short four-line poem about mountains."}'
+          - id: toolcall_4
+            type: function
+            function:
+              name: task
+              arguments: '{"agent_type":"general-purpose","description":"Write rivers poem","mode":"background","prompt":"Write a
+                short four-line poem about rivers."}'
+      - role: tool
+        tool_call_id: toolcall_3
+        content: "Agent started in background with agent_id: agent-0. You can use read_agent tool with this agent_id to check
+          status and retrieve results. Instruct the user to use /tasks to manage the background agent."
+      - role: tool
+        tool_call_id: toolcall_4
+        content: "Agent started in background with agent_id: agent-1. You can use read_agent tool with this agent_id to check
+          status and retrieve results. Instruct the user to use /tasks to manage the background agent."
+      - role: assistant
+        content: Now waiting for both agents to complete and retrieving their poems.
+        tool_calls:
+          - id: toolcall_5
+            type: function
+            function:
+              name: read_agent
+              arguments: '{"agent_id":"agent-0","timeout":60,"wait":true}'
+      - role: tool
+        tool_call_id: toolcall_5
+        content: >-
+          Agent completed. agent_id: agent-0, agent_type: general-purpose, status: completed, description: Write
+          mountains poem, elapsed: 0s, duration: 0s
+
+
+          Result:
+
+          Peaks that pierce the endless sky,
+
+          Standing tall where eagles fly,
+
+          Silent giants, ancient stone,
+
+          Watching over earth alone.
+      - role: assistant
+        tool_calls:
+          - id: toolcall_6
+            type: function
+            function:
+              name: read_agent
+              arguments: '{"agent_id":"agent-1","timeout":60,"wait":true}'
+      - role: tool
+        tool_call_id: toolcall_6
+        content: >-
+          Agent completed. agent_id: agent-1, agent_type: general-purpose, status: completed, description: Write rivers
+          poem, elapsed: 0s, duration: 0s
+
+
+          Result:
+
+          Rivers flow from mountain heights,
+
+          Carving paths through ancient stone,
+
+          Whispering tales of days and nights,
+
+          To the sea they journey home.
+      - role: assistant
+        content: |-
+          Here are the two poems:
+
+          **Mountains:**
+          Peaks that pierce the endless sky,
+          Standing tall where eagles fly,
+          Silent giants, ancient stone,
+          Watching over earth alone.
+
+          **Rivers:**
+          Rivers flow from mountain heights,
+          Carving paths through ancient stone,
+          Whispering tales of days and nights,
+          To the sea they journey home.

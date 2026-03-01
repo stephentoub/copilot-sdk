@@ -56,6 +56,7 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
     private readonly ConcurrentDictionary<string, CopilotSession> _sessions = new();
     private readonly CopilotClientOptions _options;
     private readonly ILogger _logger;
+    private readonly CopilotTelemetry? _telemetry;
     private Task<Connection>? _connectionTask;
     private bool _disposed;
     private readonly int? _optionsPort;
@@ -123,6 +124,9 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         }
 
         _logger = _options.Logger ?? NullLogger.Instance;
+        _telemetry = _options.Telemetry is { } telemetryConfig ?
+            new CopilotTelemetry(telemetryConfig) :
+            null;
 
         // Parse CliUrl if provided
         if (!string.IsNullOrEmpty(_options.CliUrl))
@@ -407,7 +411,9 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         var response = await InvokeRpcAsync<CreateSessionResponse>(
             connection.Rpc, "session.create", [request], cancellationToken);
 
-        var session = new CopilotSession(response.SessionId, connection.Rpc, response.WorkspacePath);
+        var session = new CopilotSession(response.SessionId, connection.Rpc, _telemetry, response.WorkspacePath,
+            config.Model, config.Provider, config.SystemMessage, config.Tools, config.Streaming,
+            config.AgentName, config.AgentDescription);
         session.RegisterTools(config.Tools ?? []);
         session.RegisterPermissionHandler(config.OnPermissionRequest);
         if (config.OnUserInputRequest != null)
@@ -499,7 +505,9 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         var response = await InvokeRpcAsync<ResumeSessionResponse>(
             connection.Rpc, "session.resume", [request], cancellationToken);
 
-        var session = new CopilotSession(response.SessionId, connection.Rpc, response.WorkspacePath);
+        var session = new CopilotSession(response.SessionId, connection.Rpc, _telemetry, response.WorkspacePath,
+            config.Model, config.Provider, config.SystemMessage, config.Tools, config.Streaming,
+            config.AgentName, config.AgentDescription);
         session.RegisterTools(config.Tools ?? []);
         session.RegisterPermissionHandler(config.OnPermissionRequest);
         if (config.OnUserInputRequest != null)
@@ -1183,6 +1191,7 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         await ForceStopAsync();
+        _telemetry?.Dispose();
     }
 
     private class RpcHandler(CopilotClient client)
@@ -1239,6 +1248,14 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
                 });
             }
 
+            using var activity = client._telemetry?.StartExecuteToolActivity(
+                toolName, toolCallId, tool.Description, arguments, session.GetTelemetryToolCallParentContext(toolCallId));
+            var telemetry = client._telemetry;
+            Stopwatch? stopwatch = telemetry is { OperationDurationHistogram.Enabled: true } ?
+                Stopwatch.StartNew() :
+                null;
+            Exception? operationError = null;
+
             try
             {
                 var invocation = new ToolInvocation
@@ -1292,10 +1309,13 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
                         ? je.GetString()!
                         : JsonSerializer.Serialize(result, tool.JsonSerializerOptions.GetTypeInfo(typeof(object))),
                 };
+                client._telemetry?.SetExecuteToolResult(activity, result);
                 return new ToolCallResponse(toolResultObject);
             }
             catch (Exception ex)
             {
+                operationError = ex;
+                CopilotTelemetry.RecordError(activity, ex);
                 return new ToolCallResponse(new()
                 {
                     // TODO: We should offer some way to control whether or not to expose detailed exception information to the LLM.
@@ -1304,6 +1324,21 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
                     ResultType = "failure",
                     Error = ex.Message
                 });
+            }
+            finally
+            {
+                if (stopwatch is not null && telemetry is not null)
+                {
+                    telemetry.RecordOperationDuration(
+                        stopwatch.Elapsed.TotalSeconds,
+                        requestModel: null,
+                        responseModel: null,
+                        providerName: session.TelemetryProviderName,
+                        serverAddress: session.TelemetryServerAddress,
+                        serverPort: session.TelemetryServerPort,
+                        error: operationError,
+                        operationName: OpenTelemetryConsts.GenAI.ExecuteTool);
+                }
             }
         }
 

@@ -78,6 +78,7 @@ new CopilotClient(options?: CopilotClientOptions)
 - `autoRestart?: boolean` - Auto-restart on crash (default: true)
 - `githubToken?: string` - GitHub token for authentication. When provided, takes priority over other auth methods.
 - `useLoggedInUser?: boolean` - Whether to use logged-in user for authentication (default: true, but false when `githubToken` is provided). Cannot be used with `cliUrl`.
+- `telemetry?: TelemetryConfig` - OpenTelemetry instrumentation configuration. When provided, enables automatic tracing and metrics following [GenAI semantic conventions](../docs/opentelemetry-instrumentation.md).
 
 #### Methods
 
@@ -105,6 +106,8 @@ Create a new conversation session.
 - `tools?: Tool[]` - Custom tools exposed to the CLI
 - `systemMessage?: SystemMessageConfig` - System message customization (see below)
 - `infiniteSessions?: InfiniteSessionConfig` - Configure automatic context compaction (see below)
+- `agentName?: string` - Agent name for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.name` attribute.
+- `agentDescription?: string` - Agent description for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.description` attribute.
 - `provider?: ProviderConfig` - Custom API provider configuration (BYOK - Bring Your Own Key). See [Custom Providers](#custom-providers) section.
 - `onUserInputRequest?: UserInputHandler` - Handler for user input requests from the agent. Enables the `ask_user` tool. See [User Input Requests](#user-input-requests) section.
 - `hooks?: SessionHooks` - Hook handlers for session lifecycle events. See [Session Hooks](#session-hooks) section.

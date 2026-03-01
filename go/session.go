@@ -57,6 +57,7 @@ type Session struct {
 	nextHandlerID     uint64
 	handlerMutex      sync.RWMutex
 	toolHandlers      map[string]ToolHandler
+	toolDescriptions  map[string]string
 	toolHandlersM     sync.RWMutex
 	permissionHandler PermissionHandlerFunc
 	permissionMux     sync.RWMutex
@@ -64,6 +65,8 @@ type Session struct {
 	userInputMux      sync.RWMutex
 	hooks             *SessionHooks
 	hooksMux          sync.RWMutex
+	telemetry         *copilotTelemetry
+	turnTracker       *agentTurnTracker
 
 	// RPC provides typed session-scoped RPC methods.
 	RPC *rpc.SessionRpc
@@ -79,12 +82,13 @@ func (s *Session) WorkspacePath() string {
 // newSession creates a new session wrapper with the given session ID and client.
 func newSession(sessionID string, client *jsonrpc2.Client, workspacePath string) *Session {
 	return &Session{
-		SessionID:     sessionID,
-		workspacePath: workspacePath,
-		client:        client,
-		handlers:      make([]sessionHandler, 0),
-		toolHandlers:  make(map[string]ToolHandler),
-		RPC:           rpc.NewSessionRpc(client, sessionID),
+		SessionID:        sessionID,
+		workspacePath:    workspacePath,
+		client:           client,
+		handlers:         make([]sessionHandler, 0),
+		toolHandlers:     make(map[string]ToolHandler),
+		toolDescriptions: make(map[string]string),
+		RPC:              rpc.NewSessionRpc(client, sessionID),
 	}
 }
 
@@ -111,6 +115,10 @@ func newSession(sessionID string, client *jsonrpc2.Client, workspacePath string)
 //	    log.Printf("Failed to send message: %v", err)
 //	}
 func (s *Session) Send(ctx context.Context, options MessageOptions) (string, error) {
+	if s.turnTracker != nil {
+		s.turnTracker.beginSend(ctx, options.Prompt)
+	}
+
 	req := sessionSendRequest{
 		SessionID:   s.SessionID,
 		Prompt:      options.Prompt,
@@ -120,6 +128,9 @@ func (s *Session) Send(ctx context.Context, options MessageOptions) (string, err
 
 	result, err := s.client.Request("session.send", req)
 	if err != nil {
+		if s.turnTracker != nil {
+			s.turnTracker.completeTurnWithError(err)
+		}
 		return "", fmt.Errorf("failed to send message: %w", err)
 	}
 
@@ -206,9 +217,18 @@ func (s *Session) SendAndWait(ctx context.Context, options MessageOptions) (*Ses
 		mu.Unlock()
 		return result, nil
 	case err := <-errCh:
+		// Complete telemetry spans on session error (idempotent if already completed).
+		if s.turnTracker != nil {
+			s.turnTracker.completeTurnWithError(err)
+		}
 		return nil, err
-	case <-ctx.Done(): // TODO: remove once session.Send honors the context
-		return nil, fmt.Errorf("waiting for session.idle: %w", ctx.Err())
+	case <-ctx.Done():
+		ctxErr := fmt.Errorf("waiting for session.idle: %w", ctx.Err())
+		// Complete telemetry spans on timeout/cancellation (idempotent if already completed).
+		if s.turnTracker != nil {
+			s.turnTracker.completeTurnWithError(ctxErr)
+		}
+		return nil, ctxErr
 	}
 }
 
@@ -267,11 +287,13 @@ func (s *Session) registerTools(tools []Tool) {
 	defer s.toolHandlersM.Unlock()
 
 	s.toolHandlers = make(map[string]ToolHandler)
+	s.toolDescriptions = make(map[string]string)
 	for _, tool := range tools {
 		if tool.Name == "" || tool.Handler == nil {
 			continue
 		}
 		s.toolHandlers[tool.Name] = tool.Handler
+		s.toolDescriptions[tool.Name] = tool.Description
 	}
 }
 
@@ -282,6 +304,14 @@ func (s *Session) getToolHandler(name string) (ToolHandler, bool) {
 	handler, ok := s.toolHandlers[name]
 	s.toolHandlersM.RUnlock()
 	return handler, ok
+}
+
+// getToolDescription retrieves a registered tool's description by name.
+func (s *Session) getToolDescription(name string) string {
+	s.toolHandlersM.RLock()
+	desc := s.toolDescriptions[name]
+	s.toolHandlersM.RUnlock()
+	return desc
 }
 
 // registerPermissionHandler registers a permission handler for this session.
@@ -457,6 +487,10 @@ func (s *Session) handleHooksInvoke(hookType string, rawInput json.RawMessage) (
 // This is an internal method; handlers are called synchronously and any panics
 // are recovered to prevent crashing the event dispatcher.
 func (s *Session) dispatchEvent(event SessionEvent) {
+	if s.turnTracker != nil {
+		s.turnTracker.processEvent(event)
+	}
+
 	s.handlerMutex.RLock()
 	handlers := make([]SessionEventHandler, 0, len(s.handlers))
 	for _, h := range s.handlers {
@@ -526,6 +560,11 @@ func (s *Session) GetMessages(ctx context.Context) ([]SessionEvent, error) {
 //	    log.Printf("Failed to destroy session: %v", err)
 //	}
 func (s *Session) Destroy() error {
+	// Close any open telemetry spans before destroying.
+	if s.turnTracker != nil {
+		s.turnTracker.completeOnDispose()
+	}
+
 	_, err := s.client.Request("session.destroy", sessionDestroyRequest{SessionID: s.SessionID})
 	if err != nil {
 		return fmt.Errorf("failed to destroy session: %w", err)
@@ -575,4 +614,30 @@ func (s *Session) Abort(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// configureTelemetryContext sets telemetry context from session configuration.
+func (s *Session) configureTelemetryContext(
+	model string,
+	provider *ProviderConfig,
+	systemMessage *SystemMessageConfig,
+	tools []Tool,
+	streaming bool,
+	agentName string,
+	agentDescription string,
+) {
+	if s.telemetry == nil {
+		return
+	}
+	s.turnTracker = newAgentTurnTracker(s.telemetry, s.SessionID, model, provider, systemMessage, tools, streaming, agentName, agentDescription)
+}
+
+// getToolCallParentContext returns the parent context for a tool call span.
+// For subagent tool calls this returns the subagent's invoke_agent context;
+// for main agent tool calls this returns the root invoke_agent context.
+func (s *Session) getToolCallParentContext(toolCallID string) context.Context {
+	if s.turnTracker == nil {
+		return nil
+	}
+	return s.turnTracker.getToolCallParentContext(toolCallID)
 }

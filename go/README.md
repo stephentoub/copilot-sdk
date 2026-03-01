@@ -141,6 +141,7 @@ Event types: `SessionLifecycleCreated`, `SessionLifecycleDeleted`, `SessionLifec
 - `Env` ([]string): Environment variables for CLI process (default: inherits from current process)
 - `GitHubToken` (string): GitHub token for authentication. When provided, takes priority over other auth methods.
 - `UseLoggedInUser` (\*bool): Whether to use logged-in user for authentication (default: true, but false when `GitHubToken` is provided). Cannot be used with `CLIUrl`.
+- `Telemetry` (\*TelemetryConfig): OpenTelemetry instrumentation configuration. When provided, enables automatic tracing and metrics following [GenAI semantic conventions](../docs/opentelemetry-instrumentation.md).
 
 **SessionConfig:**
 
@@ -152,6 +153,8 @@ Event types: `SessionLifecycleCreated`, `SessionLifecycleDeleted`, `SessionLifec
 - `Provider` (\*ProviderConfig): Custom API provider configuration (BYOK). See [Custom Providers](#custom-providers) section.
 - `Streaming` (bool): Enable streaming delta events
 - `InfiniteSessions` (\*InfiniteSessionConfig): Automatic context compaction configuration
+- `AgentName` (string): Agent name for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.name` attribute.
+- `AgentDescription` (string): Agent description for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.description` attribute.
 - `OnUserInputRequest` (UserInputHandler): Handler for user input requests from the agent (enables ask_user tool). See [User Input Requests](#user-input-requests) section.
 - `Hooks` (\*SessionHooks): Hook handlers for session lifecycle events. See [Session Hooks](#session-hooks) section.
 

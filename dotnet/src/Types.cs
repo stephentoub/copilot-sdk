@@ -48,6 +48,7 @@ public class CopilotClientOptions
         Logger = other.Logger;
         LogLevel = other.LogLevel;
         Port = other.Port;
+        Telemetry = other.Telemetry;
         UseLoggedInUser = other.UseLoggedInUser;
         UseStdio = other.UseStdio;
     }
@@ -93,6 +94,15 @@ public class CopilotClientOptions
     public bool? UseLoggedInUser { get; set; }
 
     /// <summary>
+    /// Gets or sets configuration for OpenTelemetry instrumentation.
+    /// </summary>
+    /// <remarks>
+    /// When <see langword="null"/>, no telemetry is emitted. To enable telemetry with default settings,
+    /// set this property to a new instance.
+    /// </remarks>
+    public TelemetryConfig? Telemetry { get; set; }
+
+    /// <summary>
     /// Creates a shallow clone of this <see cref="CopilotClientOptions"/> instance.
     /// </summary>
     /// <remarks>
@@ -102,6 +112,29 @@ public class CopilotClientOptions
     /// deep-cloned; the original and the clone will share those objects.
     /// </remarks>
     public virtual CopilotClientOptions Clone() => new(this);
+}
+
+/// <summary>
+/// Configuration for OpenTelemetry instrumentation of the Copilot SDK.
+/// </summary>
+public class TelemetryConfig
+{
+    /// <summary>
+    /// Gets or sets whether to include potentially sensitive data (e.g. message content, tool arguments/results) in telemetry.
+    /// </summary>
+    /// <remarks>
+    /// When <see langword="null"/>, defaults to the value of the <c>OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT</c>
+    /// environment variable (if set to <see langword="true"/>), otherwise <see langword="false"/>.
+    /// </remarks>
+    public bool? EnableSensitiveData { get; set; }
+
+    /// <summary>
+    /// Gets or sets the name used for the <see cref="ActivitySource"/> and <see cref="Meter"/>.
+    /// </summary>
+    /// <remarks>
+    /// When <see langword="null"/>, defaults to <c>"github.copilot.sdk"</c>.
+    /// </remarks>
+    public string? SourceName { get; set; }
 }
 
 public class ToolBinaryResult
@@ -754,6 +787,8 @@ public class SessionConfig
     {
         if (other is null) return;
 
+        AgentName = other.AgentName;
+        AgentDescription = other.AgentDescription;
         AvailableTools = other.AvailableTools is not null ? [.. other.AvailableTools] : null;
         ClientName = other.ClientName;
         ConfigDir = other.ConfigDir;
@@ -858,6 +893,18 @@ public class SessionConfig
     public List<string>? DisabledSkills { get; set; }
 
     /// <summary>
+    /// Name of the agent for telemetry attribution.
+    /// When set, the invoke_agent span includes a <c>gen_ai.agent.name</c> attribute.
+    /// </summary>
+    public string? AgentName { get; set; }
+
+    /// <summary>
+    /// Description of the agent for telemetry attribution.
+    /// When set, the invoke_agent span includes a <c>gen_ai.agent.description</c> attribute.
+    /// </summary>
+    public string? AgentDescription { get; set; }
+
+    /// <summary>
     /// Infinite session configuration for persistent workspaces and automatic compaction.
     /// When enabled (default), sessions automatically manage context limits and persist state.
     /// </summary>
@@ -891,6 +938,8 @@ public class ResumeSessionConfig
     {
         if (other is null) return;
 
+        AgentName = other.AgentName;
+        AgentDescription = other.AgentDescription;
         AvailableTools = other.AvailableTools is not null ? [.. other.AvailableTools] : null;
         ClientName = other.ClientName;
         ConfigDir = other.ConfigDir;
@@ -1013,6 +1062,16 @@ public class ResumeSessionConfig
     /// List of skill names to disable.
     /// </summary>
     public List<string>? DisabledSkills { get; set; }
+
+    /// <summary>
+    /// Name of the agent for telemetry attribution.
+    /// </summary>
+    public string? AgentName { get; set; }
+
+    /// <summary>
+    /// Description of the agent for telemetry attribution.
+    /// </summary>
+    public string? AgentDescription { get; set; }
 
     /// <summary>
     /// Infinite session configuration for persistent workspaces and automatic compaction.

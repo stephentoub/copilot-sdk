@@ -11,6 +11,26 @@ import type { SessionEvent as GeneratedSessionEvent } from "./generated/session-
 export type SessionEvent = GeneratedSessionEvent;
 
 /**
+ * Configuration for OpenTelemetry instrumentation.
+ * When provided to CopilotClientOptions, enables telemetry emission
+ * following the Semantic Conventions for Generative AI systems.
+ */
+export interface TelemetryConfig {
+    /**
+     * Whether to include potentially sensitive data (message content, tool arguments/results) in telemetry.
+     * When not set, falls back to the OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT environment variable.
+     * @default false
+     */
+    enableSensitiveData?: boolean;
+
+    /**
+     * Source name for the tracer and meter.
+     * @default "github.copilot.sdk"
+     */
+    sourceName?: string;
+}
+
+/**
  * Options for creating a CopilotClient
  */
 export interface CopilotClientOptions {
@@ -89,6 +109,13 @@ export interface CopilotClientOptions {
      * @default true (but defaults to false when githubToken is provided)
      */
     useLoggedInUser?: boolean;
+
+    /**
+     * OpenTelemetry instrumentation configuration.
+     * When provided, enables telemetry emission following GenAI semantic conventions.
+     * When undefined, no telemetry is emitted (opt-in pattern).
+     */
+    telemetry?: TelemetryConfig;
 }
 
 /**
@@ -731,6 +758,18 @@ export interface SessionConfig {
      * Set to `{ enabled: false }` to disable.
      */
     infiniteSessions?: InfiniteSessionConfig;
+
+    /**
+     * Name of the agent for telemetry attribution.
+     * When set, the invoke_agent span includes a `gen_ai.agent.name` attribute.
+     */
+    agentName?: string;
+
+    /**
+     * Description of the agent for telemetry attribution.
+     * When set, the invoke_agent span includes a `gen_ai.agent.description` attribute.
+     */
+    agentDescription?: string;
 }
 
 /**
@@ -757,6 +796,8 @@ export type ResumeSessionConfig = Pick<
     | "skillDirectories"
     | "disabledSkills"
     | "infiniteSessions"
+    | "agentName"
+    | "agentDescription"
 > & {
     /**
      * When true, skips emitting the session.resume event.

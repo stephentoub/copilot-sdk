@@ -4,6 +4,7 @@
 
 using Microsoft.Extensions.AI;
 using StreamJsonRpc;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -47,6 +48,7 @@ public partial class CopilotSession : IAsyncDisposable
     private readonly HashSet<SessionEventHandler> _eventHandlers = new();
     private readonly Dictionary<string, AIFunction> _toolHandlers = new();
     private readonly JsonRpc _rpc;
+    private readonly CopilotTelemetry.AgentTurnTracker? _turnTracker;
     private PermissionRequestHandler? _permissionHandler;
     private readonly SemaphoreSlim _permissionHandlerLock = new(1, 1);
     private UserInputHandler? _userInputHandler;
@@ -76,19 +78,44 @@ public partial class CopilotSession : IAsyncDisposable
     /// </value>
     public string? WorkspacePath { get; }
 
+    internal string TelemetryProviderName => _turnTracker?.ProviderName ?? OpenTelemetryConsts.DefaultProviderName;
+    internal string? TelemetryServerAddress => _turnTracker?.ServerAddress;
+    internal int? TelemetryServerPort => _turnTracker?.ServerPort;
+    internal ActivityContext TelemetryActivityContext => _turnTracker?.GetActivityContext() ?? default;
+    internal ActivityContext GetTelemetryToolCallParentContext(string toolCallId) =>
+        _turnTracker?.GetToolCallParentContext(toolCallId) ?? default;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="CopilotSession"/> class.
     /// </summary>
     /// <param name="sessionId">The unique identifier for this session.</param>
     /// <param name="rpc">The JSON-RPC connection to the Copilot CLI.</param>
+    /// <param name="telemetry">The telemetry instance for this session, or null if telemetry is disabled.</param>
     /// <param name="workspacePath">The workspace path if infinite sessions are enabled.</param>
+    /// <param name="model">The request model for telemetry.</param>
+    /// <param name="provider">The provider configuration for telemetry.</param>
+    /// <param name="systemMessage">The system message configuration for telemetry.</param>
+    /// <param name="tools">The tool definitions for telemetry.</param>
+    /// <param name="streaming">Whether streaming is enabled, for telemetry.</param>
     /// <remarks>
     /// This constructor is internal. Use <see cref="CopilotClient.CreateSessionAsync"/> to create sessions.
     /// </remarks>
-    internal CopilotSession(string sessionId, JsonRpc rpc, string? workspacePath = null)
+    internal CopilotSession(
+        string sessionId,
+        JsonRpc rpc,
+        CopilotTelemetry? telemetry = null,
+        string? workspacePath = null,
+        string? model = null,
+        ProviderConfig? provider = null,
+        SystemMessageConfig? systemMessage = null,
+        ICollection<AIFunction>? tools = null,
+        bool streaming = false,
+        string? agentName = null,
+        string? agentDescription = null)
     {
         SessionId = sessionId;
         _rpc = rpc;
+        _turnTracker = telemetry is not null ? new CopilotTelemetry.AgentTurnTracker(telemetry, sessionId, model, provider, systemMessage, tools, streaming, agentName, agentDescription) : null;
         WorkspacePath = workspacePath;
     }
 
@@ -125,18 +152,27 @@ public partial class CopilotSession : IAsyncDisposable
     /// </example>
     public async Task<string> SendAsync(MessageOptions options, CancellationToken cancellationToken = default)
     {
-        var request = new SendMessageRequest
+        _turnTracker?.BeginSend(options.Prompt);
+        try
         {
-            SessionId = SessionId,
-            Prompt = options.Prompt,
-            Attachments = options.Attachments,
-            Mode = options.Mode
-        };
+            var request = new SendMessageRequest
+            {
+                SessionId = SessionId,
+                Prompt = options.Prompt,
+                Attachments = options.Attachments,
+                Mode = options.Mode
+            };
 
-        var response = await InvokeRpcAsync<SendMessageResponse>(
-            "session.send", [request], cancellationToken);
+            var response = await InvokeRpcAsync<SendMessageResponse>(
+                "session.send", [request], cancellationToken);
 
-        return response.MessageId;
+            return response.MessageId;
+        }
+        catch (Exception ex) when (_turnTracker is { } tracker)
+        {
+            tracker.CompleteTurnWithError(ex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -198,17 +234,28 @@ public partial class CopilotSession : IAsyncDisposable
 
         await SendAsync(options, cancellationToken);
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(effectiveTimeout);
-
-        using var registration = cts.Token.Register(() =>
+        try
         {
-            if (cancellationToken.IsCancellationRequested)
-                tcs.TrySetCanceled(cancellationToken);
-            else
-                tcs.TrySetException(new TimeoutException($"SendAndWaitAsync timed out after {effectiveTimeout}"));
-        });
-        return await tcs.Task;
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(effectiveTimeout);
+
+            using var registration = cts.Token.Register(() =>
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    tcs.TrySetCanceled(cancellationToken);
+                else
+                    tcs.TrySetException(new TimeoutException($"SendAndWaitAsync timed out after {effectiveTimeout}"));
+            });
+
+            return await tcs.Task;
+        }
+        catch (Exception ex) when (_turnTracker is { } tracker)
+        {
+            // If timeout/cancellation occurs before DispatchEvent handles the turn-ending event,
+            // complete the telemetry span with the error (idempotent if already completed).
+            tracker.CompleteTurnWithError(ex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -258,6 +305,8 @@ public partial class CopilotSession : IAsyncDisposable
     /// </remarks>
     internal void DispatchEvent(SessionEvent sessionEvent)
     {
+        _turnTracker?.ProcessEvent(sessionEvent);
+
         foreach (var handler in _eventHandlers.ToArray())
         {
             // We allow handler exceptions to propagate so they are not lost
@@ -588,6 +637,7 @@ public partial class CopilotSession : IAsyncDisposable
 
         _eventHandlers.Clear();
         _toolHandlers.Clear();
+        _turnTracker?.CompleteOnDispose();
 
         await _permissionHandlerLock.WaitAsync();
         try

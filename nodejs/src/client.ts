@@ -23,6 +23,7 @@ import {
     StreamMessageWriter,
 } from "vscode-jsonrpc/node.js";
 import { createServerRpc } from "./generated/rpc.js";
+import { CopilotTelemetry } from "./copilot-telemetry.js";
 import { getSdkProtocolVersion } from "./sdkProtocolVersion.js";
 import { CopilotSession } from "./session.js";
 import type {
@@ -137,7 +138,7 @@ export class CopilotClient {
     private sessions: Map<string, CopilotSession> = new Map();
     private stderrBuffer: string = ""; // Captures CLI stderr for error messages
     private options: Required<
-        Omit<CopilotClientOptions, "cliUrl" | "githubToken" | "useLoggedInUser">
+        Omit<CopilotClientOptions, "cliUrl" | "githubToken" | "useLoggedInUser" | "telemetry">
     > & {
         cliUrl?: string;
         githubToken?: string;
@@ -154,6 +155,7 @@ export class CopilotClient {
     > = new Map();
     private _rpc: ReturnType<typeof createServerRpc> | null = null;
     private processExitPromise: Promise<never> | null = null; // Rejects when CLI process exits
+    private readonly _telemetry: CopilotTelemetry | undefined;
 
     /**
      * Typed server-scoped RPC methods.
@@ -226,6 +228,9 @@ export class CopilotClient {
             // Default useLoggedInUser to false when githubToken is provided, otherwise true
             useLoggedInUser: options.useLoggedInUser ?? (options.githubToken ? false : true),
         };
+
+        // Initialize telemetry if configured (opt-in)
+        this._telemetry = options.telemetry ? new CopilotTelemetry(options.telemetry) : undefined;
     }
 
     /**
@@ -556,7 +561,19 @@ export class CopilotClient {
             sessionId: string;
             workspacePath?: string;
         };
-        const session = new CopilotSession(sessionId, this.connection!, workspacePath);
+        const session = new CopilotSession(
+            sessionId,
+            this.connection!,
+            workspacePath,
+            this._telemetry,
+            config.model,
+            config.provider,
+            config.systemMessage,
+            config.tools,
+            config.streaming,
+            config.agentName,
+            config.agentDescription
+        );
         session.registerTools(config.tools);
         session.registerPermissionHandler(config.onPermissionRequest);
         if (config.onUserInputRequest) {
@@ -642,7 +659,19 @@ export class CopilotClient {
             sessionId: string;
             workspacePath?: string;
         };
-        const session = new CopilotSession(resumedSessionId, this.connection!, workspacePath);
+        const session = new CopilotSession(
+            resumedSessionId,
+            this.connection!,
+            workspacePath,
+            this._telemetry,
+            config.model,
+            config.provider,
+            config.systemMessage,
+            config.tools,
+            config.streaming,
+            config.agentName,
+            config.agentDescription
+        );
         session.registerTools(config.tools);
         session.registerPermissionHandler(config.onPermissionRequest);
         if (config.onUserInputRequest) {
@@ -1396,13 +1425,25 @@ export class CopilotClient {
             return { result: this.buildUnsupportedToolResult(params.toolName) };
         }
 
-        return await this.executeToolCall(handler, params);
+        return await this.executeToolCall(handler, params, session);
     }
 
     private async executeToolCall(
         handler: ToolHandler,
-        request: ToolCallRequestPayload
+        request: ToolCallRequestPayload,
+        session: CopilotSession
     ): Promise<ToolCallResponsePayload> {
+        const telemetry = session.telemetry;
+        const span = telemetry?.startExecuteToolSpan(
+            request.toolName,
+            request.toolCallId,
+            session.getToolDescription(request.toolName),
+            request.arguments,
+            session.getTelemetryToolCallParentContext(request.toolCallId)
+        );
+        const startTime = telemetry ? performance.now() : 0;
+        let operationError: Error | undefined;
+
         try {
             const invocation = {
                 sessionId: request.sessionId,
@@ -1412,8 +1453,16 @@ export class CopilotClient {
             };
             const result = await handler(request.arguments, invocation);
 
+            if (span && telemetry) {
+                telemetry.setExecuteToolResult(span, result);
+            }
+
             return { result: this.normalizeToolResult(result) };
         } catch (error) {
+            operationError = error instanceof Error ? error : new Error(String(error));
+            if (span) {
+                CopilotTelemetry.recordError(span, operationError);
+            }
             const message = error instanceof Error ? error.message : String(error);
             return {
                 result: {
@@ -1425,6 +1474,21 @@ export class CopilotClient {
                     toolTelemetry: {},
                 },
             };
+        } finally {
+            if (span && telemetry) {
+                const durationSeconds = (performance.now() - startTime) / 1000;
+                telemetry.recordOperationDuration(
+                    durationSeconds,
+                    undefined,
+                    undefined,
+                    session.telemetryProviderName,
+                    session.telemetryServerAddress,
+                    session.telemetryServerPort,
+                    operationError,
+                    "execute_tool"
+                );
+                span.end();
+            }
         }
     }
 

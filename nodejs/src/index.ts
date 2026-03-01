@@ -45,6 +45,7 @@ export type {
     SystemMessageAppendConfig,
     SystemMessageConfig,
     SystemMessageReplaceConfig,
+    TelemetryConfig,
     Tool,
     ToolHandler,
     ToolInvocation,

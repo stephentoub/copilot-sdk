@@ -44,6 +44,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/github/copilot-sdk/go/internal/embeddedcli"
 	"github.com/github/copilot-sdk/go/internal/jsonrpc2"
 	"github.com/github/copilot-sdk/go/rpc"
@@ -91,6 +93,7 @@ type Client struct {
 	processDone            chan struct{}
 	processErrorPtr        *error
 	osProcess              atomic.Pointer[os.Process]
+	telemetry              *copilotTelemetry
 
 	// RPC provides typed server-scoped RPC methods.
 	// This field is nil until the client is connected via Start().
@@ -186,6 +189,9 @@ func NewClient(options *ClientOptions) *Client {
 		}
 		if options.UseLoggedInUser != nil {
 			opts.UseLoggedInUser = options.UseLoggedInUser
+		}
+		if options.Telemetry != nil {
+			client.telemetry = newCopilotTelemetry(options.Telemetry)
 		}
 	}
 
@@ -528,6 +534,8 @@ func (c *Client) CreateSession(ctx context.Context, config *SessionConfig) (*Ses
 	}
 
 	session := newSession(response.SessionID, c.client, response.WorkspacePath)
+	session.telemetry = c.telemetry
+	session.configureTelemetryContext(config.Model, config.Provider, config.SystemMessage, config.Tools, config.Streaming, config.AgentName, config.AgentDescription)
 
 	session.registerTools(config.Tools)
 	session.registerPermissionHandler(config.OnPermissionRequest)
@@ -627,6 +635,9 @@ func (c *Client) ResumeSessionWithOptions(ctx context.Context, sessionID string,
 	}
 
 	session := newSession(response.SessionID, c.client, response.WorkspacePath)
+	session.telemetry = c.telemetry
+	session.configureTelemetryContext(config.Model, config.Provider, config.SystemMessage, config.Tools, config.Streaming, config.AgentName, config.AgentDescription)
+
 	session.registerTools(config.Tools)
 	session.registerPermissionHandler(config.OnPermissionRequest)
 	if config.OnUserInputRequest != nil {
@@ -1290,26 +1301,78 @@ func (c *Client) handleToolCallRequest(req toolCallRequest) (*toolCallResponse, 
 		return &toolCallResponse{Result: buildUnsupportedToolResult(req.ToolName)}, nil
 	}
 
-	result := c.executeToolCall(req.SessionID, req.ToolCallID, req.ToolName, req.Arguments, handler)
+	toolDescription := session.getToolDescription(req.ToolName)
+
+	result := c.executeToolCall(session, req.ToolCallID, req.ToolName, toolDescription, req.Arguments, handler)
 	return &toolCallResponse{Result: result}, nil
 }
 
 // executeToolCall executes a tool handler and returns the result.
 func (c *Client) executeToolCall(
-	sessionID, toolCallID, toolName string,
+	session *Session,
+	toolCallID, toolName, toolDescription string,
 	arguments any,
 	handler ToolHandler,
 ) (result ToolResult) {
 	invocation := ToolInvocation{
-		SessionID:  sessionID,
+		SessionID:  session.SessionID,
 		ToolCallID: toolCallID,
 		ToolName:   toolName,
 		Arguments:  arguments,
 	}
 
+	var span trace.Span
+	var spanCtx context.Context
+	var startTime time.Time
+	var operationError error
+
+	if c.telemetry != nil {
+		toolSpanCtx := context.Background()
+		if session.turnTracker != nil {
+			if tCtx := session.getToolCallParentContext(toolCallID); tCtx != nil {
+				toolSpanCtx = tCtx
+			}
+		}
+		spanCtx, span = c.telemetry.startExecuteToolSpan(
+			toolSpanCtx, toolName, toolCallID, toolDescription, arguments)
+		startTime = time.Now()
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			result = buildFailedToolResult(fmt.Sprintf("tool panic: %v", r))
+			if span != nil {
+				panicErr := &toolPanicError{Value: r}
+				recordSpanError(span, panicErr)
+				operationError = panicErr
+			}
+		}
+		if span != nil {
+			span.End()
+		}
+		if c.telemetry != nil && !startTime.IsZero() {
+			providerName := otelDefaultProviderName
+			var serverAddress string
+			var serverPort int
+			if session.turnTracker != nil {
+				providerName = session.turnTracker.getProviderName()
+				serverAddress = session.turnTracker.getServerAddress()
+				serverPort = session.turnTracker.getServerPort()
+			}
+			ctx := spanCtx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			c.telemetry.recordOperationDuration(
+				ctx,
+				time.Since(startTime).Seconds(),
+				"", "",
+				providerName,
+				serverAddress,
+				serverPort,
+				operationError,
+				otelExecuteTool,
+			)
 		}
 	}()
 
@@ -1317,7 +1380,13 @@ func (c *Client) executeToolCall(
 		var err error
 		result, err = handler(invocation)
 		if err != nil {
+			operationError = err
+			if span != nil {
+				recordSpanError(span, err)
+			}
 			result = buildFailedToolResult(err.Error())
+		} else if c.telemetry != nil && span != nil {
+			c.telemetry.setExecuteToolResult(span, result)
 		}
 	}
 

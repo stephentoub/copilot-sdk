@@ -1,570 +1,394 @@
-# OpenTelemetry Instrumentation for Copilot SDK
+# OpenTelemetry Instrumentation
 
-This guide shows how to add OpenTelemetry tracing to your Copilot SDK applications using GenAI semantic conventions.
+The Copilot SDK includes built-in OpenTelemetry instrumentation following the [OpenTelemetry Semantic Conventions for Generative AI systems (v1.40)](https://opentelemetry.io/docs/specs/semconv/gen-ai/). Telemetry is **opt-in** — enable it by providing a `TelemetryConfig` when creating a client. The SDK automatically creates spans, records metrics, and emits span events for agent invocations and tool executions.
 
-## Overview
+## Quick Start
 
-The Copilot SDK emits session events as your agent processes requests. You can instrument your application to convert these events into OpenTelemetry spans and attributes following the [OpenTelemetry GenAI Semantic Conventions v1.34.0](https://opentelemetry.io/docs/specs/semconv/gen-ai/).
+<details open>
+<summary><strong>Node.js / TypeScript</strong></summary>
 
-## Installation
+Install the OpenTelemetry SDK packages (the `@opentelemetry/api` peer dependency is included with the Copilot SDK):
+
+```bash
+npm install @opentelemetry/sdk-trace-node @opentelemetry/sdk-trace-base @opentelemetry/sdk-metrics
+```
+
+```typescript
+import { CopilotClient } from "@github/copilot-sdk";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { SimpleSpanProcessor, ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+
+// 1. Set up OpenTelemetry (your exporter of choice)
+const provider = new NodeTracerProvider();
+provider.addSpanProcessor(new SimpleSpanProcessor(new ConsoleSpanExporter()));
+provider.register();
+
+// 2. Enable built-in telemetry on the client
+const client = new CopilotClient({
+    telemetry: {},  // defaults are fine — or customize below
+});
+await client.start();
+
+// 3. Use the SDK as usual — spans and metrics are emitted automatically
+const session = await client.createSession({ model: "gpt-5" });
+const response = await session.sendAndWait({ prompt: "Hello!" });
+
+await session.destroy();
+await client.stop();
+```
+
+</details>
+
+<details>
+<summary><strong>Python</strong></summary>
+
+Install the OpenTelemetry SDK packages:
 
 ```bash
 pip install opentelemetry-sdk opentelemetry-api
 ```
 
-For exporting to observability backends:
-
-```bash
-# Console output
-pip install opentelemetry-sdk
-
-# Azure Monitor
-pip install azure-monitor-opentelemetry
-
-# OTLP (Jaeger, Prometheus, etc.)
-pip install opentelemetry-exporter-otlp
-```
-
-## Basic Setup
-
-### 1. Initialize OpenTelemetry
-
 ```python
+import asyncio
+from copilot import CopilotClient
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
-# Setup tracer provider
-tracer_provider = TracerProvider()
-trace.set_tracer_provider(tracer_provider)
+# 1. Set up OpenTelemetry
+provider = TracerProvider()
+provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(provider)
 
-# Add exporter (console example)
-span_exporter = ConsoleSpanExporter()
-tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
-
-# Get a tracer
-tracer = trace.get_tracer(__name__)
-```
-
-### 2. Create Spans Around Agent Operations
-
-```python
-from copilot import CopilotClient, PermissionHandler
-from copilot.generated.session_events import SessionEventType
-from opentelemetry import trace, context
-from opentelemetry.trace import SpanKind
-
-# Initialize client and start the CLI server
-client = CopilotClient()
+# 2. Enable built-in telemetry on the client
+client = CopilotClient({"telemetry": {}})
 await client.start()
 
-tracer = trace.get_tracer(__name__)
+# 3. Use the SDK as usual
+session = await client.create_session({"model": "gpt-5"})
+response = await session.send_and_wait({"prompt": "Hello!"})
 
-# Create a span for the agent invocation
-span_attrs = {
-    "gen_ai.operation.name": "invoke_agent",
-    "gen_ai.provider.name": "github.copilot",
-    "gen_ai.agent.name": "my-agent",
-    "gen_ai.request.model": "gpt-5",
-}
-
-span = tracer.start_span(
-    name="invoke_agent my-agent",
-    kind=SpanKind.CLIENT,
-    attributes=span_attrs
-)
-token = context.attach(trace.set_span_in_context(span))
-
-try:
-    # Create a session (model is set here, not on the client)
-    session = await client.create_session({
-        "model": "gpt-5",
-        "on_permission_request": PermissionHandler.approve_all,
-    })
-
-    # Subscribe to events via callback
-    def handle_event(event):
-        if event.type == SessionEventType.ASSISTANT_USAGE:
-            if event.data.model:
-                span.set_attribute("gen_ai.response.model", event.data.model)
-
-    unsubscribe = session.on(handle_event)
-
-    # Send a message (returns a message ID)
-    await session.send({"prompt": "Hello, world!"})
-
-    # Or send and wait for the session to become idle
-    response = await session.send_and_wait({"prompt": "Hello, world!"})
-finally:
-    context.detach(token)
-    span.end()
-    await client.stop()
+await session.destroy()
+await client.stop()
 ```
 
-## Copilot SDK Event to GenAI Attribute Mapping
+</details>
 
-The Copilot SDK emits `SessionEventType` events during agent execution. Subscribe to these events using `session.on(handler)`, which returns an unsubscribe function. Here's how to map these events to GenAI semantic convention attributes:
+<details>
+<summary><strong>Go</strong></summary>
 
-### Core Session Events
-
-| SessionEventType | GenAI Attributes | Description |
-|------------------|------------------|-------------|
-| `SESSION_START` | - | Session initialization (mark span start) |
-| `SESSION_IDLE` | - | Session completed (mark span end) |
-| `SESSION_ERROR` | `error.type`, `error.message` | Error occurred |
-
-### Assistant Events
-
-| SessionEventType | GenAI Attributes | Description |
-|------------------|------------------|-------------|
-| `ASSISTANT_TURN_START` | - | Assistant begins processing |
-| `ASSISTANT_TURN_END` | - | Assistant finished processing |
-| `ASSISTANT_MESSAGE` | `gen_ai.output.messages` (event) | Final assistant message with complete content |
-| `ASSISTANT_MESSAGE_DELTA` | - | Streaming message chunk (optional to trace) |
-| `ASSISTANT_USAGE` | `gen_ai.usage.input_tokens`<br>`gen_ai.usage.output_tokens`<br>`gen_ai.response.model` | Token usage and model information |
-| `ASSISTANT_REASONING` | - | Reasoning content (optional to trace) |
-| `ASSISTANT_INTENT` | - | Assistant's understood intent |
-
-### Tool Execution Events
-
-| SessionEventType | GenAI Attributes / Span | Description |
-|------------------|-------------------------|-------------|
-| `TOOL_EXECUTION_START` | Create child span:<br>- `gen_ai.tool.name`<br>- `gen_ai.tool.call.id`<br>- `gen_ai.operation.name`: `execute_tool`<br>- `gen_ai.tool.call.arguments` (opt-in) | Tool execution begins |
-| `TOOL_EXECUTION_COMPLETE` | On child span:<br>- `gen_ai.tool.call.result` (opt-in)<br>- `error.type` (if failed)<br>End child span | Tool execution finished |
-| `TOOL_EXECUTION_PARTIAL_RESULT` | - | Streaming tool result |
-
-### Model and Context Events
-
-| SessionEventType | GenAI Attributes | Description |
-|------------------|------------------|-------------|
-| `SESSION_MODEL_CHANGE` | `gen_ai.request.model` | Model changed during session |
-| `SESSION_CONTEXT_CHANGED` | - | Context window modified |
-| `SESSION_TRUNCATION` | - | Context truncated |
-
-## Detailed Event Mapping Examples
-
-### ASSISTANT_USAGE Event
-
-When you receive an `ASSISTANT_USAGE` event, extract token usage:
-
-```python
-from copilot.generated.session_events import SessionEventType
-
-def handle_usage(event):
-    if event.type == SessionEventType.ASSISTANT_USAGE:
-        data = event.data
-        if data.model:
-            span.set_attribute("gen_ai.response.model", data.model)
-        if data.input_tokens is not None:
-            span.set_attribute("gen_ai.usage.input_tokens", int(data.input_tokens))
-        if data.output_tokens is not None:
-            span.set_attribute("gen_ai.usage.output_tokens", int(data.output_tokens))
-
-unsubscribe = session.on(handle_usage)
-await session.send({"prompt": "Hello"})
-```
-
-**Event Data Structure:**
-<!-- docs-validate: skip -->
-```python
-@dataclass
-class Usage:
-    input_tokens: float
-    output_tokens: float
-    cache_read_tokens: float
-    cache_write_tokens: float
-```
-
-**Maps to GenAI Attributes:**
-- `input_tokens` → `gen_ai.usage.input_tokens`
-- `output_tokens` → `gen_ai.usage.output_tokens`
-- Response model → `gen_ai.response.model`
-
-### TOOL_EXECUTION_START / COMPLETE Events
-
-Create child spans for each tool execution:
-
-```python
-from opentelemetry.trace import SpanKind
-import json
-
-# Dictionary to track active tool spans
-tool_spans = {}
-
-def handle_tool_events(event):
-    data = event.data
-
-    if event.type == SessionEventType.TOOL_EXECUTION_START and data:
-        call_id = data.tool_call_id or str(uuid.uuid4())
-        tool_name = data.tool_name or "unknown"
-
-        tool_attrs = {
-            "gen_ai.tool.name": tool_name,
-            "gen_ai.operation.name": "execute_tool",
-        }
-
-        if call_id:
-            tool_attrs["gen_ai.tool.call.id"] = call_id
-
-        # Optional: include tool arguments (may contain sensitive data)
-        if data.arguments is not None:
-            try:
-                tool_attrs["gen_ai.tool.call.arguments"] = json.dumps(data.arguments)
-            except Exception:
-                tool_attrs["gen_ai.tool.call.arguments"] = str(data.arguments)
-
-        tool_span = tracer.start_span(
-            name=f"execute_tool {tool_name}",
-            kind=SpanKind.CLIENT,
-            attributes=tool_attrs
-        )
-        tool_token = context.attach(trace.set_span_in_context(tool_span))
-        tool_spans[call_id] = (tool_span, tool_token)
-
-    elif event.type == SessionEventType.TOOL_EXECUTION_COMPLETE and data:
-        call_id = data.tool_call_id
-        entry = tool_spans.pop(call_id, None) if call_id else None
-
-        if entry:
-            tool_span, tool_token = entry
-
-            # Optional: include tool result (may contain sensitive data)
-            if data.result is not None:
-                try:
-                    result_str = json.dumps(data.result)
-                except Exception:
-                    result_str = str(data.result)
-                # Truncate to 512 chars to avoid huge spans
-                tool_span.set_attribute("gen_ai.tool.call.result", result_str[:512])
-
-            # Mark as error if tool failed
-            if hasattr(data, "success") and data.success is False:
-                tool_span.set_attribute("error.type", "tool_error")
-
-            context.detach(tool_token)
-            tool_span.end()
-
-unsubscribe = session.on(handle_tool_events)
-await session.send({"prompt": "What's the weather?"})
-```
-
-**Tool Event Data:**
-- `tool_call_id` → `gen_ai.tool.call.id`
-- `tool_name` → `gen_ai.tool.name`
-- `arguments` → `gen_ai.tool.call.arguments` (opt-in)
-- `result` → `gen_ai.tool.call.result` (opt-in)
-
-### ASSISTANT_MESSAGE Event
-
-Capture the final message as a span event:
-
-```python
-def handle_message(event):
-    if event.type == SessionEventType.ASSISTANT_MESSAGE and event.data:
-        if event.data.content:
-            # Add as a span event (opt-in for content recording)
-            span.add_event(
-                "gen_ai.output.messages",
-                attributes={
-                    "gen_ai.event.content": json.dumps({
-                        "role": "assistant",
-                        "content": event.data.content
-                    })
-                }
-            )
-
-unsubscribe = session.on(handle_message)
-await session.send({"prompt": "Tell me a joke"})
-```
-
-## Complete Example
-
-```python
-import asyncio
-import json
-import uuid
-from copilot import CopilotClient, PermissionHandler
-from copilot.generated.session_events import SessionEventType
-from opentelemetry import trace, context
-from opentelemetry.trace import SpanKind
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
-
-# Setup OpenTelemetry
-tracer_provider = TracerProvider()
-trace.set_tracer_provider(tracer_provider)
-tracer_provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
-tracer = trace.get_tracer(__name__)
-
-async def invoke_agent(prompt: str):
-    """Invoke agent with full OpenTelemetry instrumentation."""
-
-    # Create main span
-    span_attrs = {
-        "gen_ai.operation.name": "invoke_agent",
-        "gen_ai.provider.name": "github.copilot",
-        "gen_ai.agent.name": "example-agent",
-        "gen_ai.request.model": "gpt-5",
-    }
-
-    span = tracer.start_span(
-        name="invoke_agent example-agent",
-        kind=SpanKind.CLIENT,
-        attributes=span_attrs
-    )
-    token = context.attach(trace.set_span_in_context(span))
-    tool_spans = {}
-
-    try:
-        client = CopilotClient()
-        await client.start()
-
-        session = await client.create_session({
-            "model": "gpt-5",
-            "on_permission_request": PermissionHandler.approve_all,
-        })
-
-        # Subscribe to events via callback
-        def handle_event(event):
-            data = event.data
-
-            # Handle usage events
-            if event.type == SessionEventType.ASSISTANT_USAGE and data:
-                if data.model:
-                    span.set_attribute("gen_ai.response.model", data.model)
-                if data.input_tokens is not None:
-                    span.set_attribute("gen_ai.usage.input_tokens", int(data.input_tokens))
-                if data.output_tokens is not None:
-                    span.set_attribute("gen_ai.usage.output_tokens", int(data.output_tokens))
-
-            # Handle tool execution
-            elif event.type == SessionEventType.TOOL_EXECUTION_START and data:
-                call_id = data.tool_call_id or str(uuid.uuid4())
-                tool_name = data.tool_name or "unknown"
-
-                tool_attrs = {
-                    "gen_ai.tool.name": tool_name,
-                    "gen_ai.operation.name": "execute_tool",
-                    "gen_ai.tool.call.id": call_id,
-                }
-
-                tool_span = tracer.start_span(
-                    name=f"execute_tool {tool_name}",
-                    kind=SpanKind.CLIENT,
-                    attributes=tool_attrs
-                )
-                tool_token = context.attach(trace.set_span_in_context(tool_span))
-                tool_spans[call_id] = (tool_span, tool_token)
-
-            elif event.type == SessionEventType.TOOL_EXECUTION_COMPLETE and data:
-                call_id = data.tool_call_id
-                entry = tool_spans.pop(call_id, None) if call_id else None
-                if entry:
-                    tool_span, tool_token = entry
-                    context.detach(tool_token)
-                    tool_span.end()
-
-            # Capture final message
-            elif event.type == SessionEventType.ASSISTANT_MESSAGE and data:
-                if data.content:
-                    print(f"Assistant: {data.content}")
-
-        unsubscribe = session.on(handle_event)
-
-        # Send message and wait for completion
-        response = await session.send_and_wait({"prompt": prompt})
-
-        span.set_attribute("gen_ai.response.finish_reasons", ["stop"])
-        unsubscribe()
-
-    except Exception as e:
-        span.set_attribute("error.type", type(e).__name__)
-        raise
-    finally:
-        # Clean up any unclosed tool spans
-        for call_id, (tool_span, tool_token) in tool_spans.items():
-            tool_span.set_attribute("error.type", "stream_aborted")
-            context.detach(tool_token)
-            tool_span.end()
-
-        context.detach(token)
-        span.end()
-        await client.stop()
-
-# Run
-asyncio.run(invoke_agent("What's 2+2?"))
-```
-
-## Required Span Attributes
-
-According to OpenTelemetry GenAI semantic conventions, these attributes are **required** for agent invocation spans:
-
-| Attribute | Description | Example |
-|-----------|-------------|---------|
-| `gen_ai.operation.name` | Operation type | `invoke_agent`, `chat`, `execute_tool` |
-| `gen_ai.provider.name` | Provider identifier | `github.copilot` |
-| `gen_ai.request.model` | Model used for request | `gpt-5`, `gpt-4.1` |
-
-## Recommended Span Attributes
-
-These attributes are **recommended** for better observability:
-
-| Attribute | Description |
-|-----------|-------------|
-| `gen_ai.agent.id` | Unique agent identifier |
-| `gen_ai.agent.name` | Human-readable agent name |
-| `gen_ai.response.model` | Actual model used in response |
-| `gen_ai.usage.input_tokens` | Input tokens consumed |
-| `gen_ai.usage.output_tokens` | Output tokens generated |
-| `gen_ai.response.finish_reasons` | Completion reasons (e.g., `["stop"]`) |
-
-## Content Recording
-
-Recording message content and tool arguments/results is **optional** and should be opt-in since it may contain sensitive data.
-
-### Environment Variable Control
+Install the OpenTelemetry SDK packages:
 
 ```bash
-# Enable content recording
+go get go.opentelemetry.io/otel
+go get go.opentelemetry.io/otel/sdk/trace
+go get go.opentelemetry.io/otel/exporters/stdout/stdouttrace
+```
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    copilot "github.com/github/copilot-sdk/go"
+    "go.opentelemetry.io/otel"
+    sdktrace "go.opentelemetry.io/otel/sdk/trace"
+    "go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+)
+
+func main() {
+    // 1. Set up OpenTelemetry
+    exporter, _ := stdouttrace.New()
+    tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter))
+    otel.SetTracerProvider(tp)
+    defer tp.Shutdown(context.Background())
+
+    // 2. Enable built-in telemetry on the client
+    client := copilot.NewClient(&copilot.ClientOptions{
+        Telemetry: &copilot.TelemetryConfig{},
+    })
+    if err := client.Start(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+    defer client.Stop()
+
+    // 3. Use the SDK as usual
+    session, _ := client.CreateSession(context.Background(), &copilot.SessionConfig{
+        Model: "gpt-5",
+    })
+    defer session.Destroy()
+
+    session.SendAndWait(context.Background(), copilot.MessageOptions{
+        Prompt: "Hello!",
+    })
+}
+```
+
+</details>
+
+<details>
+<summary><strong>.NET</strong></summary>
+
+Install the OpenTelemetry SDK packages:
+
+```bash
+dotnet add package OpenTelemetry
+dotnet add package OpenTelemetry.Exporter.Console
+```
+
+<!-- docs-validate: skip -->
+```csharp
+using GitHub.Copilot.SDK;
+using OpenTelemetry;
+using OpenTelemetry.Trace;
+
+// 1. Set up OpenTelemetry — add the SDK's ActivitySource
+using var tracerProvider = Sdk.CreateTracerProviderBuilder()
+    .AddSource("github.copilot.sdk")   // matches the default source name
+    .AddConsoleExporter()
+    .Build();
+
+// 2. Enable built-in telemetry on the client
+await using var client = new CopilotClient(new CopilotClientOptions
+{
+    Telemetry = new TelemetryConfig()
+});
+await client.StartAsync();
+
+// 3. Use the SDK as usual
+await using var session = await client.CreateSessionAsync(new SessionConfig
+{
+    Model = "gpt-5"
+});
+await session.SendAndWaitAsync(new MessageOptions { Prompt = "Hello!" });
+```
+
+</details>
+
+## Configuration
+
+All languages accept the same two options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enableSensitiveData` | `false` | Include potentially sensitive data (message content, tool arguments/results, system instructions) in telemetry. Falls back to the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` environment variable when not set. |
+| `sourceName` | `"github.copilot.sdk"` | Name used for the tracer and meter. Use this to distinguish multiple SDK instances or match your OpenTelemetry pipeline filters. |
+
+> **Language-specific option casing:**
+> Node.js uses `enableSensitiveData` / `sourceName` (camelCase).
+> Python uses `enable_sensitive_data` / `source_name` (snake_case).
+> Go uses `EnableSensitiveData` / `SourceName` (PascalCase).
+> .NET uses `EnableSensitiveData` / `SourceName` (PascalCase).
+
+### Enabling Sensitive Data
+
+By default, message content, tool arguments, tool results, and system instructions are **not** included in telemetry to protect potentially sensitive data. To include them:
+
+**Option 1 — Per-client configuration:**
+
+<!-- docs-validate: skip -->
+```typescript
+// Node.js
+const client = new CopilotClient({
+    telemetry: { enableSensitiveData: true },
+});
+```
+
+<!-- docs-validate: skip -->
+```python
+# Python
+client = CopilotClient({"telemetry": {"enable_sensitive_data": True}})
+```
+
+<!-- docs-validate: skip -->
+```go
+// Go
+client := copilot.NewClient(&copilot.ClientOptions{
+    Telemetry: &copilot.TelemetryConfig{
+        EnableSensitiveData: copilot.Bool(true),
+    },
+})
+```
+
+<!-- docs-validate: skip -->
+```csharp
+// .NET
+var client = new CopilotClient(new CopilotClientOptions
+{
+    Telemetry = new TelemetryConfig { EnableSensitiveData = true }
+});
+```
+
+**Option 2 — Environment variable (applies to all clients):**
+
+```bash
 export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
 ```
 
-### Checking at Runtime
+## Agent Attribution
+
+You can associate sessions with a named agent for telemetry attribution using `agentName` and `agentDescription` on the session config. When set, the `invoke_agent` span includes `gen_ai.agent.name` and `gen_ai.agent.description` attributes.
+
+<!-- docs-validate: skip -->
+```typescript
+// Node.js
+const session = await client.createSession({
+    model: "gpt-5",
+    agentName: "weather-bot",
+    agentDescription: "An agent that provides weather forecasts",
+});
+```
 
 <!-- docs-validate: skip -->
 ```python
-import os
-
-def should_record_content():
-    return os.getenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "false").lower() == "true"
-
-# Only add content if enabled
-if should_record_content() and event.data.content:
-    span.add_event("gen_ai.output.messages", ...)
+# Python
+session = await client.create_session({
+    "model": "gpt-5",
+    "agent_name": "weather-bot",
+    "agent_description": "An agent that provides weather forecasts",
+})
 ```
 
-## MCP (Model Context Protocol) Tool Conventions
+<!-- docs-validate: skip -->
+```go
+// Go
+session, _ := client.CreateSession(ctx, &copilot.SessionConfig{
+    Model:            "gpt-5",
+    AgentName:        "weather-bot",
+    AgentDescription: "An agent that provides weather forecasts",
+})
+```
 
-For MCP-based tools, add these additional attributes following the [OpenTelemetry MCP semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/):
+<!-- docs-validate: skip -->
+```csharp
+// .NET
+var session = await client.CreateSessionAsync(new SessionConfig
+{
+    Model = "gpt-5",
+    AgentName = "weather-bot",
+    AgentDescription = "An agent that provides weather forecasts",
+});
+```
+
+## Emitted Telemetry
+
+### Spans
+
+The SDK automatically creates the following spans:
+
+#### `invoke_agent` (Client span)
+
+Created on the first `send` / `sendAndWait` call after the session becomes idle and reused across subsequent `send` / `sendAndWait` calls in the same turn. Ends when a turn-ending event is emitted (e.g., `session.idle` or `session.error`). Named `invoke_agent {model}` when a model is known, or just `invoke_agent`.
+
+| Attribute | Description | Condition |
+|-----------|-------------|-----------|
+| `gen_ai.operation.name` | `"invoke_agent"` | Always |
+| `gen_ai.provider.name` | Provider name (e.g., `"github"`, `"openai"`, `"azure.ai.openai"`, `"anthropic"`) | Always |
+| `gen_ai.agent.id` | Session ID | Always |
+| `gen_ai.conversation.id` | Session ID | Always |
+| `gen_ai.request.model` | Requested model name | When model is set |
+| `gen_ai.response.model` | Actual model used (from usage event) | When reported |
+| `gen_ai.agent.name` | Agent name | When `agentName` is set |
+| `gen_ai.agent.description` | Agent description | When `agentDescription` is set |
+| `gen_ai.usage.input_tokens` | Input token count | When reported |
+| `gen_ai.usage.output_tokens` | Output token count | When reported |
+| `gen_ai.response.finish_reasons` | `["stop"]` or `["error"]` | At span end |
+| `server.address` | Provider host | When using custom provider |
+| `server.port` | Provider port | When using custom provider |
+| `error.type` | Error type name | On error |
+| `gen_ai.input.messages` | JSON input messages | When `enableSensitiveData` is true |
+| `gen_ai.output.messages` | JSON output messages | When `enableSensitiveData` is true |
+| `gen_ai.system_instructions` | System message content | When `enableSensitiveData` is true |
+| `gen_ai.tool.definitions` | JSON tool definitions | Always (non-sensitive) |
+
+#### `execute_tool` (Internal span)
+
+Created as a child of `invoke_agent` for each custom tool call. Named `execute_tool {toolName}`.
+
+| Attribute | Description | Condition |
+|-----------|-------------|-----------|
+| `gen_ai.operation.name` | `"execute_tool"` | Always |
+| `gen_ai.tool.name` | Tool name | Always |
+| `gen_ai.tool.call.id` | Unique call ID | Always |
+| `gen_ai.tool.type` | `"function"` | Always |
+| `gen_ai.tool.description` | Tool description | When available |
+| `gen_ai.tool.call.arguments` | JSON arguments | When `enableSensitiveData` is true |
+| `gen_ai.tool.call.result` | JSON result | When `enableSensitiveData` is true |
+| `error.type` | Error type name | On error |
+
+### Metrics
+
+The SDK records the following metrics (all using the configured `sourceName` as the meter name):
+
+| Metric | Type | Unit | Description |
+|--------|------|------|-------------|
+| `gen_ai.client.operation.duration` | Histogram (float) | `s` | Duration of `invoke_agent` and `execute_tool` operations |
+| `gen_ai.client.token.usage` | Histogram (int) | `{token}` | Token usage per operation, with `gen_ai.token.type` attribute (`"input"` or `"output"`) |
+
+## Exporter Setup
+
+The SDK uses the standard OpenTelemetry API — configure any exporter compatible with your language's OpenTelemetry SDK.
+
+### OTLP (Jaeger, Grafana, etc.)
+
+<!-- docs-validate: skip -->
+```bash
+# Node.js
+npm install @opentelemetry/exporter-trace-otlp-http
+
+# Python
+pip install opentelemetry-exporter-otlp
+
+# Go
+go get go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp
+
+# .NET
+dotnet add package OpenTelemetry.Exporter.OpenTelemetryProtocol
+```
+
+### Azure Monitor
+
+<!-- docs-validate: skip -->
+```bash
+# Python
+pip install azure-monitor-opentelemetry
+
+# .NET
+dotnet add package Azure.Monitor.OpenTelemetry.Exporter
+```
 
 <!-- docs-validate: skip -->
 ```python
-tool_attrs = {
-    # Required
-    "mcp.method.name": "tools/call",
-    
-    # Recommended
-    "mcp.server.name": data.mcp_server_name,
-    "mcp.session.id": session.session_id,
-    
-    # GenAI attributes
-    "gen_ai.tool.name": data.mcp_tool_name,
-    "gen_ai.operation.name": "execute_tool",
-    "network.transport": "pipe",  # Copilot SDK uses stdio
-}
-```
-
-## Span Naming Conventions
-
-Follow these patterns for span names:
-
-| Operation | Span Name Pattern | Example |
-|-----------|-------------------|---------|
-| Agent invocation | `invoke_agent {agent_name}` | `invoke_agent weather-bot` |
-| Chat | `chat` | `chat` |
-| Tool execution | `execute_tool {tool_name}` | `execute_tool fetch_weather` |
-| MCP tool | `tools/call {tool_name}` | `tools/call read_file` |
-
-## Metrics
-
-You can also export metrics for token usage and operation duration:
-
-```python
-from opentelemetry import metrics
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import ConsoleMetricExporter, PeriodicExportingMetricReader
-
-# Setup metrics
-reader = PeriodicExportingMetricReader(ConsoleMetricExporter())
-provider = MeterProvider(metric_readers=[reader])
-metrics.set_meter_provider(provider)
-
-meter = metrics.get_meter(__name__)
-
-# Create metrics
-operation_duration = meter.create_histogram(
-    name="gen_ai.client.operation.duration",
-    description="Duration of GenAI operations",
-    unit="ms"
-)
-
-token_usage = meter.create_counter(
-    name="gen_ai.client.token.usage",
-    description="Token usage count"
-)
-
-# Record metrics
-operation_duration.record(123.45, attributes={
-    "gen_ai.operation.name": "invoke_agent",
-    "gen_ai.request.model": "gpt-5",
-})
-
-token_usage.add(150, attributes={
-    "gen_ai.token.type": "input",
-    "gen_ai.operation.name": "invoke_agent",
-})
-```
-
-## Azure Monitor Integration
-
-For production observability with Azure Monitor:
-
-```python
+# Python — Azure Monitor
 from azure.monitor.opentelemetry import configure_azure_monitor
-
-# Enable Azure Monitor
-connection_string = "InstrumentationKey=..."
-configure_azure_monitor(connection_string=connection_string)
-
-# Your instrumented code here
+configure_azure_monitor(connection_string="InstrumentationKey=...")
 ```
 
-View traces in the Azure Portal under your Application Insights resource → Tracing.
-
-## Best Practices
-
-1. **Always close spans**: Use try/finally blocks to ensure spans are ended even on errors
-2. **Set error attributes**: On exceptions, set `error.type` and optionally `error.message`
-3. **Use child spans for tools**: Create separate spans for each tool execution
-4. **Opt-in for content**: Only record message content and tool arguments when explicitly enabled
-5. **Truncate large values**: Limit tool results and arguments to reasonable sizes (e.g., 512 chars)
-6. **Set finish reasons**: Always set `gen_ai.response.finish_reasons` when the operation completes successfully
-7. **Include model info**: Capture both request and response model names
+<!-- docs-validate: skip -->
+```csharp
+// .NET — Azure Monitor
+using var tracerProvider = Sdk.CreateTracerProviderBuilder()
+    .AddSource("github.copilot.sdk")
+    .AddAzureMonitorTraceExporter(o => o.ConnectionString = "InstrumentationKey=...")
+    .Build();
+```
 
 ## Troubleshooting
 
 ### No spans appearing
 
-1. Verify tracer provider is set: `trace.set_tracer_provider(provider)`
-2. Add a span processor: `provider.add_span_processor(SimpleSpanProcessor(exporter))`
-3. Ensure spans are ended: Check for missing `span.end()` calls
+1. Verify the OpenTelemetry provider is registered before creating the `CopilotClient`.
+2. Ensure your exporter's source/activity filter includes the SDK's source name (default: `"github.copilot.sdk"`). For .NET, this means calling `.AddSource("github.copilot.sdk")` on the tracer provider builder.
+3. Confirm `telemetry` is set on the client options — when omitted, no telemetry is emitted.
 
-### Tool spans not showing as children
+### Missing message content or tool arguments
 
-Make sure to attach the tool span to the parent context:
-<!-- docs-validate: skip -->
-```python
-tool_token = context.attach(trace.set_span_in_context(tool_span))
-```
-
-### Context warnings in async code
-
-You may see "Failed to detach context" warnings in async streaming code. These are expected and don't affect tracing correctness.
+Sensitive attributes are gated behind `enableSensitiveData`. Set it to `true` in the `TelemetryConfig` or set the `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` environment variable.
 
 ## References
 
 - [OpenTelemetry GenAI Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 - [OpenTelemetry MCP Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/)
-- [OpenTelemetry Python SDK](https://opentelemetry.io/docs/instrumentation/python/)
-- [GenAI Semantic Conventions v1.34.0](https://opentelemetry.io/schemas/1.34.0)
 - [Copilot SDK Documentation](https://github.com/github/copilot-sdk)

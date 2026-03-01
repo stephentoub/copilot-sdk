@@ -8,17 +8,21 @@
  */
 
 import type { MessageConnection } from "vscode-jsonrpc/node";
+import type { Context } from "@opentelemetry/api";
 import { createSessionRpc } from "./generated/rpc.js";
+import { CopilotTelemetry, AgentTurnTracker } from "./copilot-telemetry.js";
 import type {
     MessageOptions,
     PermissionHandler,
     PermissionRequest,
     PermissionRequestResult,
+    ProviderConfig,
     SessionEvent,
     SessionEventHandler,
     SessionEventPayload,
     SessionEventType,
     SessionHooks,
+    SystemMessageConfig,
     Tool,
     ToolHandler,
     TypedSessionEventHandler,
@@ -60,10 +64,15 @@ export class CopilotSession {
     private typedEventHandlers: Map<SessionEventType, Set<(event: SessionEvent) => void>> =
         new Map();
     private toolHandlers: Map<string, ToolHandler> = new Map();
+    private toolDescriptions: Map<string, string> = new Map();
     private permissionHandler?: PermissionHandler;
     private userInputHandler?: UserInputHandler;
     private hooks?: SessionHooks;
     private _rpc: ReturnType<typeof createSessionRpc> | null = null;
+
+    // Telemetry state
+    private readonly _telemetry: CopilotTelemetry | undefined;
+    private readonly _turnTracker: AgentTurnTracker | undefined;
 
     /**
      * Creates a new CopilotSession instance.
@@ -71,13 +80,42 @@ export class CopilotSession {
      * @param sessionId - The unique identifier for this session
      * @param connection - The JSON-RPC message connection to the Copilot CLI
      * @param workspacePath - Path to the session workspace directory (when infinite sessions enabled)
+     * @param telemetry - The telemetry instance, or undefined if telemetry is disabled
+     * @param model - The request model name
+     * @param provider - The provider configuration
+     * @param systemMessage - The system message configuration
+     * @param tools - The tool definitions
+     * @param streaming - Whether streaming is enabled
      * @internal This constructor is internal. Use {@link CopilotClient.createSession} to create sessions.
      */
     constructor(
         public readonly sessionId: string,
         private connection: MessageConnection,
-        private readonly _workspacePath?: string
-    ) {}
+        private readonly _workspacePath?: string,
+        telemetry?: CopilotTelemetry,
+        model?: string,
+        provider?: ProviderConfig,
+        systemMessage?: SystemMessageConfig,
+        tools?: Tool[],
+        streaming?: boolean,
+        agentName?: string,
+        agentDescription?: string
+    ) {
+        this._telemetry = telemetry;
+        this._turnTracker = telemetry
+            ? new AgentTurnTracker(
+                  telemetry,
+                  sessionId,
+                  model,
+                  provider,
+                  systemMessage,
+                  tools,
+                  streaming,
+                  agentName,
+                  agentDescription
+              )
+            : undefined;
+    }
 
     /**
      * Typed session-scoped RPC methods.
@@ -96,6 +134,27 @@ export class CopilotSession {
      */
     get workspacePath(): string | undefined {
         return this._workspacePath;
+    }
+
+    /** @internal Telemetry accessors for client-level tool instrumentation. */
+    get telemetry(): CopilotTelemetry | undefined {
+        return this._telemetry;
+    }
+    get telemetrySpanContext(): Context | undefined {
+        return this._turnTracker?.getSpanContext();
+    }
+    get telemetryProviderName(): string {
+        return this._turnTracker?.providerName ?? "github";
+    }
+    get telemetryServerAddress(): string | undefined {
+        return this._turnTracker?.serverAddress;
+    }
+    get telemetryServerPort(): number | undefined {
+        return this._turnTracker?.serverPort;
+    }
+    /** @internal Gets the parent context for a tool call span (may be subagent context). */
+    getTelemetryToolCallParentContext(toolCallId: string): Context | undefined {
+        return this._turnTracker?.getToolCallParentContext(toolCallId);
     }
 
     /**
@@ -117,14 +176,24 @@ export class CopilotSession {
      * ```
      */
     async send(options: MessageOptions): Promise<string> {
-        const response = await this.connection.sendRequest("session.send", {
-            sessionId: this.sessionId,
-            prompt: options.prompt,
-            attachments: options.attachments,
-            mode: options.mode,
-        });
+        // Start telemetry span on first send after idle
+        this._turnTracker?.beginSend(options.prompt);
 
-        return (response as { messageId: string }).messageId;
+        try {
+            const response = await this.connection.sendRequest("session.send", {
+                sessionId: this.sessionId,
+                prompt: options.prompt,
+                attachments: options.attachments,
+                mode: options.mode,
+            });
+
+            return (response as { messageId: string }).messageId;
+        } catch (error) {
+            this._turnTracker?.completeTurnWithError(
+                error instanceof Error ? error : new Error(String(error))
+            );
+            throw error;
+        }
     }
 
     /**
@@ -197,6 +266,12 @@ export class CopilotSession {
             await Promise.race([idlePromise, timeoutPromise]);
 
             return lastAssistantMessage;
+        } catch (ex) {
+            // Complete telemetry spans on timeout/cancellation (idempotent if already completed).
+            if (ex instanceof Error) {
+                this._turnTracker?.completeTurnWithError(ex);
+            }
+            throw ex;
         } finally {
             if (timeoutId !== undefined) {
                 clearTimeout(timeoutId);
@@ -289,6 +364,9 @@ export class CopilotSession {
      * @internal This method is for internal use by the SDK.
      */
     _dispatchEvent(event: SessionEvent): void {
+        // Delegate telemetry enrichment and turn completion to the tracker
+        this._turnTracker?.processEvent(event);
+
         // Dispatch to typed handlers for this specific event type
         const typedHandlers = this.typedEventHandlers.get(event.type);
         if (typedHandlers) {
@@ -322,12 +400,16 @@ export class CopilotSession {
      */
     registerTools(tools?: Tool[]): void {
         this.toolHandlers.clear();
+        this.toolDescriptions.clear();
         if (!tools) {
             return;
         }
 
         for (const tool of tools) {
             this.toolHandlers.set(tool.name, tool.handler);
+            if (tool.description) {
+                this.toolDescriptions.set(tool.name, tool.description);
+            }
         }
     }
 
@@ -340,6 +422,17 @@ export class CopilotSession {
      */
     getToolHandler(name: string): ToolHandler | undefined {
         return this.toolHandlers.get(name);
+    }
+
+    /**
+     * Retrieves a registered tool description by name.
+     *
+     * @param name - The name of the tool
+     * @returns The tool description if available, or undefined
+     * @internal This method is for internal use by the SDK.
+     */
+    getToolDescription(name: string): string | undefined {
+        return this.toolDescriptions.get(name);
     }
 
     /**
@@ -521,7 +614,9 @@ export class CopilotSession {
         this.eventHandlers.clear();
         this.typedEventHandlers.clear();
         this.toolHandlers.clear();
+        this.toolDescriptions.clear();
         this.permissionHandler = undefined;
+        this._turnTracker?.completeOnDispose();
     }
 
     /**

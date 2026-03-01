@@ -54,6 +54,9 @@ type ClientOptions struct {
 	// Default: true (but defaults to false when GitHubToken is provided).
 	// Use Bool(false) to explicitly disable.
 	UseLoggedInUser *bool
+	// Telemetry configures OpenTelemetry instrumentation.
+	// When nil, no telemetry is emitted (opt-in).
+	Telemetry *TelemetryConfig
 }
 
 // Bool returns a pointer to the given bool value.
@@ -406,6 +409,12 @@ type SessionConfig struct {
 	// InfiniteSessions configures infinite sessions for persistent workspaces and automatic compaction.
 	// When enabled (default), sessions automatically manage context limits and persist state.
 	InfiniteSessions *InfiniteSessionConfig
+	// AgentName identifies the agent for telemetry attribution.
+	// When set, the invoke_agent span includes a gen_ai.agent.name attribute.
+	AgentName string
+	// AgentDescription describes the agent for telemetry attribution.
+	// When set, the invoke_agent span includes a gen_ai.agent.description attribute.
+	AgentDescription string
 }
 
 // Tool describes a caller-implemented tool that can be invoked by Copilot
@@ -490,6 +499,10 @@ type ResumeSessionConfig struct {
 	// DisableResume, when true, skips emitting the session.resume event.
 	// Useful for reconnecting to a session without triggering resume-related side effects.
 	DisableResume bool
+	// AgentName identifies the agent for telemetry attribution.
+	AgentName string
+	// AgentDescription describes the agent for telemetry attribution.
+	AgentDescription string
 }
 
 // ProviderConfig configures a custom model provider

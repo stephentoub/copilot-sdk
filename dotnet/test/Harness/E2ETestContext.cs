@@ -89,12 +89,13 @@ public class E2ETestContext : IAsyncDisposable
         return env!;
     }
 
-    public CopilotClient CreateClient() => new(new CopilotClientOptions
+    public CopilotClient CreateClient(TelemetryConfig? telemetry = null) => new(new CopilotClientOptions
     {
         Cwd = WorkDir,
         CliPath = GetCliPath(_repoRoot),
         Environment = GetEnvironment(),
         GitHubToken = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI")) ? "fake-token-for-e2e-tests" : null,
+        Telemetry = telemetry,
     });
 
     public async ValueTask DisposeAsync()

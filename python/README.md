@@ -106,6 +106,7 @@ await client.stop()
 - `auto_restart` (bool): Auto-restart on crash (default: True)
 - `github_token` (str): GitHub token for authentication. When provided, takes priority over other auth methods.
 - `use_logged_in_user` (bool): Whether to use logged-in user for authentication (default: True, but False when `github_token` is provided). Cannot be used with `cli_url`.
+- `telemetry` (TelemetryConfig): OpenTelemetry instrumentation configuration. When provided, enables automatic tracing and metrics following [GenAI semantic conventions](../docs/opentelemetry-instrumentation.md).
 
 **SessionConfig Options (for `create_session`):**
 
@@ -117,6 +118,8 @@ await client.stop()
 - `streaming` (bool): Enable streaming delta events
 - `provider` (dict): Custom API provider configuration (BYOK). See [Custom Providers](#custom-providers) section.
 - `infinite_sessions` (dict): Automatic context compaction configuration
+- `agent_name` (str): Agent name for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.name` attribute.
+- `agent_description` (str): Agent description for telemetry attribution. When set, the `invoke_agent` span includes a `gen_ai.agent.description` attribute.
 - `on_user_input_request` (callable): Handler for user input requests from the agent (enables ask_user tool). See [User Input Requests](#user-input-requests) section.
 - `hooks` (dict): Hook handlers for session lifecycle events. See [Session Hooks](#session-hooks) section.
 

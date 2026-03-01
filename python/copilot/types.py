@@ -66,6 +66,26 @@ class SelectionAttachment(TypedDict):
 Attachment = FileAttachment | DirectoryAttachment | SelectionAttachment
 
 
+# Telemetry configuration
+class TelemetryConfig(TypedDict, total=False):
+    """Configuration for OpenTelemetry instrumentation.
+
+    When provided in CopilotClientOptions, enables OpenTelemetry GenAI semantic
+    convention instrumentation for traces and metrics.
+
+    Attributes:
+        enable_sensitive_data: Whether to include potentially sensitive data
+            (message content, tool arguments/results) in telemetry. When not
+            set, defaults to the OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+            env var, else False.
+        source_name: The name used for the tracer and meter. Defaults to
+            "github.copilot.sdk".
+    """
+
+    enable_sensitive_data: bool
+    source_name: str
+
+
 # Options for creating a CopilotClient
 class CopilotClientOptions(TypedDict, total=False):
     """Options for creating a CopilotClient"""
@@ -95,6 +115,9 @@ class CopilotClientOptions(TypedDict, total=False):
     # When False, only explicit tokens (github_token or environment variables) are used.
     # Default: True (but defaults to False when github_token is provided)
     use_logged_in_user: bool
+    # OpenTelemetry instrumentation configuration. When set, enables GenAI semantic
+    # convention traces and metrics. When absent, no telemetry is emitted (opt-in).
+    telemetry: TelemetryConfig
 
 
 ToolResultType = Literal["success", "failure", "rejected", "denied"]
@@ -504,6 +527,12 @@ class SessionConfig(TypedDict, total=False):
     # When enabled (default), sessions automatically manage context limits and persist state.
     # Set to {"enabled": False} to disable.
     infinite_sessions: InfiniteSessionConfig
+    # Name of the agent for telemetry attribution.
+    # When set, the invoke_agent span includes a gen_ai.agent.name attribute.
+    agent_name: str
+    # Description of the agent for telemetry attribution.
+    # When set, the invoke_agent span includes a gen_ai.agent.description attribute.
+    agent_description: str
 
 
 # Azure-specific provider options
@@ -570,6 +599,10 @@ class ResumeSessionConfig(TypedDict, total=False):
     # When True, skips emitting the session.resume event.
     # Useful for reconnecting to a session without triggering resume-related side effects.
     disable_resume: bool
+    # Name of the agent for telemetry attribution.
+    agent_name: str
+    # Description of the agent for telemetry attribution.
+    agent_description: str
 
 
 # Options for sending a message to a session

@@ -79,6 +79,7 @@ new CopilotClient(CopilotClientOptions? options = null)
 - `Logger` - `ILogger` instance for SDK logging
 - `GitHubToken` - GitHub token for authentication. When provided, takes priority over other auth methods.
 - `UseLoggedInUser` - Whether to use logged-in user for authentication (default: true, but false when `GitHubToken` is provided). Cannot be used with `CliUrl`.
+- `Telemetry` - OpenTelemetry instrumentation configuration (`TelemetryConfig`). When provided, enables automatic tracing and metrics following [GenAI semantic conventions](../docs/opentelemetry-instrumentation.md).
 
 #### Methods
 
@@ -110,6 +111,8 @@ Create a new conversation session.
 - `Provider` - Custom API provider configuration (BYOK)
 - `Streaming` - Enable streaming of response chunks (default: false)
 - `InfiniteSessions` - Configure automatic context compaction (see below)
+- `AgentName` - Agent name for telemetry attribution.
+- `AgentDescription` - Agent description for telemetry attribution.
 - `OnUserInputRequest` - Handler for user input requests from the agent (enables ask_user tool). See [User Input Requests](#user-input-requests) section.
 - `Hooks` - Hook handlers for session lifecycle events. See [Session Hooks](#session-hooks) section.
 

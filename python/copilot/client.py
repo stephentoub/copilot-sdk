@@ -19,11 +19,13 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from ._copilot_telemetry import OP_EXECUTE_TOOL, CopilotTelemetry
 from .generated.rpc import ServerRpc
 from .generated.session_events import session_event_from_dict
 from .jsonrpc import JsonRpcClient, ProcessExitedError
@@ -211,6 +213,13 @@ class CopilotClient:
         ] = {}
         self._lifecycle_handlers_lock = threading.Lock()
         self._rpc: ServerRpc | None = None
+
+        # Telemetry — only created when config is provided (opt-in)
+        telemetry_config = opts.get("telemetry")
+        if telemetry_config is not None:
+            self._telemetry: Any | None = CopilotTelemetry(telemetry_config)
+        else:
+            self._telemetry = None
 
     @property
     def rpc(self) -> ServerRpc:
@@ -579,7 +588,19 @@ class CopilotClient:
 
         session_id = response["sessionId"]
         workspace_path = response.get("workspacePath")
-        session = CopilotSession(session_id, self._client, workspace_path)
+        session = CopilotSession(
+            session_id,
+            self._client,
+            workspace_path,
+            self._telemetry,
+            model=cfg.get("model"),
+            provider=cfg.get("provider"),
+            system_message=cfg.get("system_message"),
+            tools=tools,
+            streaming=bool(cfg.get("streaming")),
+            agent_name=cfg.get("agent_name"),
+            agent_description=cfg.get("agent_description"),
+        )
         session._register_tools(tools)
         session._register_permission_handler(on_permission_request)
         if on_user_input_request:
@@ -761,7 +782,19 @@ class CopilotClient:
 
         resumed_session_id = response["sessionId"]
         workspace_path = response.get("workspacePath")
-        session = CopilotSession(resumed_session_id, self._client, workspace_path)
+        session = CopilotSession(
+            resumed_session_id,
+            self._client,
+            workspace_path,
+            self._telemetry,
+            model=cfg.get("model"),
+            provider=cfg.get("provider"),
+            system_message=cfg.get("system_message"),
+            tools=cfg.get("tools"),
+            streaming=bool(cfg.get("streaming")),
+            agent_name=cfg.get("agent_name"),
+            agent_description=cfg.get("agent_description"),
+        )
         session._register_tools(cfg.get("tools"))
         session._register_permission_handler(on_permission_request)
         if on_user_input_request:
@@ -1560,6 +1593,28 @@ class CopilotClient:
         Returns:
             A ToolResult containing the execution result or error.
         """
+        # Telemetry: start execute_tool span
+        telemetry = self._telemetry
+        span = None
+        start_time = None
+        with self._sessions_lock:
+            session = self._sessions.get(session_id)
+        tool_description = session._get_tool_description(tool_name) if session else None
+
+        if telemetry is not None:
+            parent_ctx = (
+                session.get_telemetry_tool_call_parent_context(tool_call_id) if session else None
+            )
+            span = telemetry.start_execute_tool_span(
+                tool_name,
+                tool_call_id,
+                tool_description,
+                arguments,
+                parent_context=parent_ctx,
+            )
+            start_time = time.monotonic()
+
+        operation_error: Exception | None = None
         invocation: ToolInvocation = {
             "session_id": session_id,
             "tool_call_id": tool_call_id,
@@ -1572,6 +1627,9 @@ class CopilotClient:
             if inspect.isawaitable(result):
                 result = await result
         except Exception as exc:  # pylint: disable=broad-except
+            operation_error = exc
+            if span is not None and telemetry is not None:
+                telemetry.record_error(span, exc)
             # Don't expose detailed error information to the LLM for security reasons.
             # The actual error is stored in the 'error' field for debugging.
             result = ToolResult(
@@ -1589,6 +1647,23 @@ class CopilotClient:
                 error="tool returned no result",
                 toolTelemetry={},
             )
+
+        # Telemetry: record tool result and finish span
+        if span is not None and telemetry is not None:
+            if operation_error is None:
+                telemetry.set_execute_tool_result(span, result)
+            if start_time is not None and session is not None:
+                telemetry.record_operation_duration(
+                    time.monotonic() - start_time,
+                    request_model=None,
+                    response_model=None,
+                    provider_name=session.telemetry_provider_name,
+                    server_address=session.telemetry_server_address,
+                    server_port=session.telemetry_server_port,
+                    error=operation_error,
+                    operation_name=OP_EXECUTE_TOOL,
+                )
+            span.end()
 
         return self._normalize_tool_result(cast(ToolResult, result))
 
