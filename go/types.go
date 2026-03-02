@@ -136,18 +136,18 @@ func (p *PermissionRequest) UnmarshalJSON(data []byte) error {
 type PermissionRequestResultKind string
 
 const (
-	// PermissionKindApproved indicates the permission was approved.
-	PermissionKindApproved PermissionRequestResultKind = "approved"
+	// PermissionRequestResultKindApproved indicates the permission was approved.
+	PermissionRequestResultKindApproved PermissionRequestResultKind = "approved"
 
-	// PermissionKindDeniedByRules indicates the permission was denied by rules.
-	PermissionKindDeniedByRules PermissionRequestResultKind = "denied-by-rules"
+	// PermissionRequestResultKindDeniedByRules indicates the permission was denied by rules.
+	PermissionRequestResultKindDeniedByRules PermissionRequestResultKind = "denied-by-rules"
 
-	// PermissionKindDeniedCouldNotRequestFromUser indicates the permission was denied because
+	// PermissionRequestResultKindDeniedCouldNotRequestFromUser indicates the permission was denied because
 	// no approval rule was found and the user could not be prompted.
-	PermissionKindDeniedCouldNotRequestFromUser PermissionRequestResultKind = "denied-no-approval-rule-and-could-not-request-from-user"
+	PermissionRequestResultKindDeniedCouldNotRequestFromUser PermissionRequestResultKind = "denied-no-approval-rule-and-could-not-request-from-user"
 
-	// PermissionKindDeniedInteractivelyByUser indicates the permission was denied interactively by the user.
-	PermissionKindDeniedInteractivelyByUser PermissionRequestResultKind = "denied-interactively-by-user"
+	// PermissionRequestResultKindDeniedInteractivelyByUser indicates the permission was denied interactively by the user.
+	PermissionRequestResultKindDeniedInteractivelyByUser PermissionRequestResultKind = "denied-interactively-by-user"
 )
 
 // PermissionRequestResult represents the result of a permission request

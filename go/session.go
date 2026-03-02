@@ -310,7 +310,7 @@ func (s *Session) handlePermissionRequest(request PermissionRequest) (Permission
 
 	if handler == nil {
 		return PermissionRequestResult{
-			Kind: PermissionKindDeniedCouldNotRequestFromUser,
+			Kind: PermissionRequestResultKindDeniedCouldNotRequestFromUser,
 		}, nil
 	}
 

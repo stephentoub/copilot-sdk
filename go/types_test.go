@@ -11,10 +11,10 @@ func TestPermissionRequestResultKind_Constants(t *testing.T) {
 		kind     PermissionRequestResultKind
 		expected string
 	}{
-		{"Approved", PermissionKindApproved, "approved"},
-		{"DeniedByRules", PermissionKindDeniedByRules, "denied-by-rules"},
-		{"DeniedCouldNotRequestFromUser", PermissionKindDeniedCouldNotRequestFromUser, "denied-no-approval-rule-and-could-not-request-from-user"},
-		{"DeniedInteractivelyByUser", PermissionKindDeniedInteractivelyByUser, "denied-interactively-by-user"},
+		{"Approved", PermissionRequestResultKindApproved, "approved"},
+		{"DeniedByRules", PermissionRequestResultKindDeniedByRules, "denied-by-rules"},
+		{"DeniedCouldNotRequestFromUser", PermissionRequestResultKindDeniedCouldNotRequestFromUser, "denied-no-approval-rule-and-could-not-request-from-user"},
+		{"DeniedInteractivelyByUser", PermissionRequestResultKindDeniedInteractivelyByUser, "denied-interactively-by-user"},
 	}
 
 	for _, tt := range tests {
@@ -38,10 +38,10 @@ func TestPermissionRequestResult_JSONRoundTrip(t *testing.T) {
 		name string
 		kind PermissionRequestResultKind
 	}{
-		{"Approved", PermissionKindApproved},
-		{"DeniedByRules", PermissionKindDeniedByRules},
-		{"DeniedCouldNotRequestFromUser", PermissionKindDeniedCouldNotRequestFromUser},
-		{"DeniedInteractivelyByUser", PermissionKindDeniedInteractivelyByUser},
+		{"Approved", PermissionRequestResultKindApproved},
+		{"DeniedByRules", PermissionRequestResultKindDeniedByRules},
+		{"DeniedCouldNotRequestFromUser", PermissionRequestResultKindDeniedCouldNotRequestFromUser},
+		{"DeniedInteractivelyByUser", PermissionRequestResultKindDeniedInteractivelyByUser},
 		{"Custom", PermissionRequestResultKind("custom")},
 	}
 
@@ -72,13 +72,13 @@ func TestPermissionRequestResult_JSONDeserialize(t *testing.T) {
 		t.Fatalf("failed to unmarshal: %v", err)
 	}
 
-	if result.Kind != PermissionKindDeniedByRules {
-		t.Errorf("expected %q, got %q", PermissionKindDeniedByRules, result.Kind)
+	if result.Kind != PermissionRequestResultKindDeniedByRules {
+		t.Errorf("expected %q, got %q", PermissionRequestResultKindDeniedByRules, result.Kind)
 	}
 }
 
 func TestPermissionRequestResult_JSONSerialize(t *testing.T) {
-	result := PermissionRequestResult{Kind: PermissionKindApproved}
+	result := PermissionRequestResult{Kind: PermissionRequestResultKindApproved}
 	data, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("failed to marshal: %v", err)

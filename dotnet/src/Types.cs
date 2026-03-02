@@ -183,16 +183,14 @@ public readonly struct PermissionRequestResultKind : IEquatable<PermissionReques
     public static PermissionRequestResultKind DeniedInteractivelyByUser { get; } = new("denied-interactively-by-user");
 
     /// <summary>Gets the underlying string value of this <see cref="PermissionRequestResultKind"/>.</summary>
-    public string Value { get; }
+    public string Value => _value ?? string.Empty;
+
+    private readonly string? _value;
 
     /// <summary>Initializes a new instance of the <see cref="PermissionRequestResultKind"/> struct.</summary>
     /// <param name="value">The string value for this kind.</param>
     [JsonConstructor]
-    public PermissionRequestResultKind(string value)
-    {
-        ArgumentNullException.ThrowIfNull(value);
-        Value = value;
-    }
+    public PermissionRequestResultKind(string value) => _value = value;
 
     /// <inheritdoc/>
     public static bool operator ==(PermissionRequestResultKind left, PermissionRequestResultKind right) => left.Equals(right);
@@ -217,8 +215,21 @@ public readonly struct PermissionRequestResultKind : IEquatable<PermissionReques
     public sealed class Converter : JsonConverter<PermissionRequestResultKind>
     {
         /// <inheritdoc/>
-        public override PermissionRequestResultKind Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-            new(reader.GetString()!);
+        public override PermissionRequestResultKind Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.String)
+            {
+                throw new JsonException("Expected string for PermissionRequestResultKind.");
+            }
+
+            var value = reader.GetString();
+            if (value is null)
+            {
+                throw new JsonException("PermissionRequestResultKind value cannot be null.");
+            }
+
+            return new PermissionRequestResultKind(value);
+        }
 
         /// <inheritdoc/>
         public override void Write(Utf8JsonWriter writer, PermissionRequestResultKind value, JsonSerializerOptions options) =>

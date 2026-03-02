@@ -69,9 +69,19 @@ public class PermissionRequestResultKindTests
     }
 
     [Fact]
-    public void Constructor_NullValue_Throws()
+    public void Constructor_NullValue_TreatedAsEmpty()
     {
-        Assert.Throws<ArgumentNullException>(() => new PermissionRequestResultKind(null!));
+        var kind = new PermissionRequestResultKind(null!);
+        Assert.Equal(string.Empty, kind.Value);
+    }
+
+    [Fact]
+    public void Default_HasEmptyStringValue()
+    {
+        var defaultKind = default(PermissionRequestResultKind);
+        Assert.Equal(string.Empty, defaultKind.Value);
+        Assert.Equal(string.Empty, defaultKind.ToString());
+        Assert.Equal(defaultKind.GetHashCode(), defaultKind.GetHashCode());
     }
 
     [Fact]
