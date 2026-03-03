@@ -495,6 +495,70 @@ class TestErrorRecording:
         assert s.attributes[ATTR_ERROR_TYPE] == "ValueError"
         assert s.status.status_code == trace.StatusCode.ERROR
 
+    def test_execute_tool_error_from_define_tool_handler(self, _reset_otel_globals):
+        """Verify that errors from @define_tool handlers propagate and get recorded on spans.
+
+        This validates the fix where @define_tool no longer catches exceptions internally,
+        allowing _execute_tool_call to record error.type and ERROR status on the
+        execute_tool span — consistent with Node.js, .NET, and Go SDKs.
+        """
+        from copilot import ToolInvocation, define_tool
+
+        exporter, reader, tp, mp = _get_exporter_and_reader(_reset_otel_globals)
+        telemetry = _make_telemetry(tracer_provider=tp, meter_provider=mp)
+
+        # Use zero-param handler signature to avoid Pydantic
+        # + from __future__ import annotations issue
+        @define_tool(description="A tool that always fails")
+        def failing_tool() -> str:
+            raise RuntimeError("deliberate failure")
+
+        # Start an execute_tool span (as _execute_tool_call would)
+        span = telemetry.start_execute_tool_span(
+            tool_name="failing_tool",
+            tool_call_id="tc-fail",
+            description="A tool that always fails",
+            arguments={},
+        )
+
+        # Simulate _execute_tool_call: invoke the handler, catch the error, record it
+        invocation: ToolInvocation = {
+            "session_id": "s1",
+            "tool_call_id": "tc-fail",
+            "tool_name": "failing_tool",
+            "arguments": {},
+        }
+        operation_error = None
+        try:
+            import asyncio
+
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(failing_tool.handler(invocation))
+            loop.close()
+        except Exception as exc:
+            operation_error = exc
+            telemetry.record_error(span, exc)
+
+        span.end()
+
+        # The exception MUST have propagated (not swallowed by @define_tool)
+        assert operation_error is not None, "@define_tool must not catch handler exceptions"
+        assert isinstance(operation_error, RuntimeError)
+
+        # The span MUST have ERROR status and error.type
+        s = exporter.get_finished_spans()[0]
+        assert s.status.status_code == trace.StatusCode.ERROR
+        assert s.attributes[ATTR_ERROR_TYPE] == "RuntimeError"
+
+        # Operation duration metric should include error.type
+        telemetry.record_operation_duration(
+            0.1, None, None, "github", None, None, operation_error, OP_EXECUTE_TOOL
+        )
+        dps = _get_metric_data_points(reader, METRIC_OPERATION_DURATION)
+        assert len(dps) > 0
+        error_dp = [dp for dp in dps if dp.attributes.get(ATTR_ERROR_TYPE) == "RuntimeError"]
+        assert len(error_dp) > 0, "duration metric includes error.type for failed tool"
+
 
 # ---------------------------------------------------------------------------
 # Tests: Tool result recording

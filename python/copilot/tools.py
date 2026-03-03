@@ -115,35 +115,26 @@ def define_tool(
             schema = ptype.model_json_schema()
 
         async def wrapped_handler(invocation: ToolInvocation) -> ToolResult:
-            try:
-                # Build args based on detected signature
-                call_args = []
-                if takes_params:
-                    args = invocation["arguments"] or {}
-                    if ptype is not None and _is_pydantic_model(ptype):
-                        call_args.append(ptype.model_validate(args))
-                    else:
-                        call_args.append(args)
-                if takes_invocation:
-                    call_args.append(invocation)
+            # Build args based on detected signature.
+            # Exceptions are NOT caught here — they propagate to the SDK's
+            # _execute_tool_call, which records errors on the execute_tool
+            # span and builds a safe ToolResult for the LLM.
+            call_args = []
+            if takes_params:
+                args = invocation["arguments"] or {}
+                if ptype is not None and _is_pydantic_model(ptype):
+                    call_args.append(ptype.model_validate(args))
+                else:
+                    call_args.append(args)
+            if takes_invocation:
+                call_args.append(invocation)
 
-                result = fn(*call_args)
+            result = fn(*call_args)
 
-                if inspect.isawaitable(result):
-                    result = await result
+            if inspect.isawaitable(result):
+                result = await result
 
-                return _normalize_result(result)
-
-            except Exception as exc:
-                # Don't expose detailed error information to the LLM for security reasons.
-                # The actual error is stored in the 'error' field for debugging.
-                return ToolResult(
-                    textResultForLlm="Invoking this tool produced an error. "
-                    "Detailed information is not available.",
-                    resultType="failure",
-                    error=str(exc),
-                    toolTelemetry={},
-                )
+            return _normalize_result(result)
 
         return Tool(
             name=tool_name,

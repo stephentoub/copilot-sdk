@@ -169,7 +169,9 @@ class TestDefineTool:
         assert received_params is not None
         assert received_params.value == "hello"
 
-    async def test_handler_error_is_hidden_from_llm(self):
+    async def test_handler_error_propagates(self):
+        """Exceptions from tool handlers propagate (caught by _execute_tool_call in client.py)."""
+
         class Params(BaseModel):
             pass
 
@@ -184,13 +186,11 @@ class TestDefineTool:
             "arguments": {},
         }
 
-        result = await failing_tool.handler(invocation)
-
-        assert result["resultType"] == "failure"
-        assert "secret error message" not in result["textResultForLlm"]
-        assert "error" in result["textResultForLlm"].lower()
-        # But the actual error is stored internally
-        assert result["error"] == "secret error message"
+        # Exceptions propagate from define_tool handlers — the SDK's
+        # _execute_tool_call catches them, records telemetry, and builds
+        # a safe ToolResult that hides error details from the LLM.
+        with pytest.raises(ValueError, match="secret error message"):
+            await failing_tool.handler(invocation)
 
     async def test_function_style_api(self):
         class Params(BaseModel):
