@@ -1144,16 +1144,14 @@ class AgentTurnTracker:
         RPC-initiated turns (no user.message) still get an agent span.
         """
         if self._agent_span is None:
-            self._agent_span, self._agent_span_context = (
-                self._telemetry.start_invoke_agent_span(
-                    self._session_id,
-                    self._request_model,
-                    self._provider_name,
-                    self._server_address,
-                    self._server_port,
-                    self._agent_name,
-                    self._agent_description,
-                )
+            self._agent_span, self._agent_span_context = self._telemetry.start_invoke_agent_span(
+                self._session_id,
+                self._request_model,
+                self._provider_name,
+                self._server_address,
+                self._server_port,
+                self._agent_name,
+                self._agent_description,
             )
             self._agent_start_time = time.monotonic()
             self._agent_input_messages = []

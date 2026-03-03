@@ -123,7 +123,11 @@ function dispatchEvent(session: CopilotSession, event: SessionEvent) {
 
 /** Send a message and dispatch the matching user.message event (unit tests
  *  use mock connections that don't produce real events). */
-async function sendWithEvent(session: CopilotSession, prompt: string, extra: Record<string, unknown> = {}) {
+async function sendWithEvent(
+    session: CopilotSession,
+    prompt: string,
+    extra: Record<string, unknown> = {}
+) {
     await session.send({ prompt, ...extra });
     dispatchEvent(session, makeEvent("user.message", { content: prompt }));
 }

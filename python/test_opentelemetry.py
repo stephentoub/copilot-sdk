@@ -199,9 +199,7 @@ async def _send_with_event(session: CopilotSession, prompt: str = "Hello") -> No
     the CLI.
     """
     await session.send({"prompt": prompt})
-    session._dispatch_event(
-        _make_session_event(SessionEventType.USER_MESSAGE, content=prompt)
-    )
+    session._dispatch_event(_make_session_event(SessionEventType.USER_MESSAGE, content=prompt))
 
 
 def _get_metric_names(reader):

@@ -572,7 +572,6 @@ type agentTurnTracker struct {
 	turnAIU            *float64
 	turnID             *string
 	turnInteractionID  *string
-
 }
 
 func newAgentTurnTracker(telemetry *copilotTelemetry, sessionID string, model string, provider *ProviderConfig, systemMessage *SystemMessageConfig, tools []Tool, streaming bool, agentName string, agentDescription string) *agentTurnTracker {

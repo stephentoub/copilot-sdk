@@ -66,7 +66,7 @@ type Session struct {
 	hooks             *SessionHooks
 	hooksMux          sync.RWMutex
 	telemetry         *copilotTelemetry
-	telemetryTracker       *agentTurnTracker
+	telemetryTracker  *agentTurnTracker
 
 	// RPC provides typed session-scoped RPC methods.
 	RPC *rpc.SessionRpc
