@@ -538,6 +538,9 @@ export class CopilotClient {
         if (config.hooks) {
             session.registerHooks(config.hooks);
         }
+        if (config.onEvent) {
+            session.on(config.onEvent);
+        }
         this.sessions.set(sessionId, session);
 
         try {
@@ -632,6 +635,9 @@ export class CopilotClient {
         }
         if (config.hooks) {
             session.registerHooks(config.hooks);
+        }
+        if (config.onEvent) {
+            session.on(config.onEvent);
         }
         this.sessions.set(sessionId, session);
 

@@ -536,6 +536,9 @@ func (c *Client) CreateSession(ctx context.Context, config *SessionConfig) (*Ses
 	if config.Hooks != nil {
 		session.registerHooks(config.Hooks)
 	}
+	if config.OnEvent != nil {
+		session.On(config.OnEvent)
+	}
 
 	c.sessionsMux.Lock()
 	c.sessions[sessionID] = session
@@ -644,6 +647,9 @@ func (c *Client) ResumeSessionWithOptions(ctx context.Context, sessionID string,
 	}
 	if config.Hooks != nil {
 		session.registerHooks(config.Hooks)
+	}
+	if config.OnEvent != nil {
+		session.On(config.OnEvent)
 	}
 
 	c.sessionsMux.Lock()

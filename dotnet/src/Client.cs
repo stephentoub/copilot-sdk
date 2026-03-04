@@ -396,6 +396,10 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         {
             session.RegisterHooks(config.Hooks);
         }
+        if (config.OnEvent != null)
+        {
+            session.On(config.OnEvent);
+        }
         _sessions[sessionId] = session;
 
         try
@@ -494,6 +498,10 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         if (config.Hooks != null)
         {
             session.RegisterHooks(config.Hooks);
+        }
+        if (config.OnEvent != null)
+        {
+            session.On(config.OnEvent);
         }
         _sessions[sessionId] = session;
 

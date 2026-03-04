@@ -589,6 +589,9 @@ class CopilotClient:
             session._register_user_input_handler(on_user_input_request)
         if hooks:
             session._register_hooks(hooks)
+        on_event = cfg.get("on_event")
+        if on_event:
+            session.on(on_event)
         with self._sessions_lock:
             self._sessions[session_id] = session
 
@@ -780,6 +783,9 @@ class CopilotClient:
             session._register_user_input_handler(on_user_input_request)
         if hooks:
             session._register_hooks(hooks)
+        on_event = cfg.get("on_event")
+        if on_event:
+            session.on(on_event)
         with self._sessions_lock:
             self._sessions[session_id] = session
 
