@@ -810,10 +810,10 @@ func TestSession(t *testing.T) {
 
 		// Verify both sessions are in the list
 		if !contains(sessionIDs, session1.SessionID) {
-			t.Errorf("Expected session1 ID %s to be in sessions list", session1.SessionID)
+			t.Errorf("Expected session1 ID %s to be in sessions list %v", session1.SessionID, sessionIDs)
 		}
 		if !contains(sessionIDs, session2.SessionID) {
-			t.Errorf("Expected session2 ID %s to be in sessions list", session2.SessionID)
+			t.Errorf("Expected session2 ID %s to be in sessions list %v", session2.SessionID, sessionIDs)
 		}
 
 		// Verify session metadata structure

@@ -176,6 +176,118 @@ class TestAuthOptions:
             )
 
 
+class TestSessionRegistrationBeforeRPC:
+    @pytest.mark.asyncio
+    async def test_create_session_registers_before_rpc(self):
+        client = CopilotClient({"cli_path": CLI_PATH})
+        await client.start()
+
+        try:
+            session_registered_during_rpc = {}
+            original_request = client._client.request
+
+            async def mock_request(method, params):
+                if method == "session.create":
+                    with client._sessions_lock:
+                        session_registered_during_rpc["value"] = (
+                            params["sessionId"] in client._sessions
+                        )
+                    return {"sessionId": params["sessionId"]}
+                return await original_request(method, params)
+
+            client._client.request = mock_request
+            await client.create_session({"on_permission_request": PermissionHandler.approve_all})
+            assert session_registered_during_rpc["value"] is True
+        finally:
+            await client.force_stop()
+
+    @pytest.mark.asyncio
+    async def test_resume_session_registers_before_rpc(self):
+        client = CopilotClient({"cli_path": CLI_PATH})
+        await client.start()
+
+        try:
+            session = await client.create_session(
+                {"on_permission_request": PermissionHandler.approve_all}
+            )
+
+            session_registered_during_rpc = {}
+            original_request = client._client.request
+
+            async def mock_request(method, params):
+                if method == "session.resume":
+                    with client._sessions_lock:
+                        session_registered_during_rpc["value"] = (
+                            params["sessionId"] in client._sessions
+                        )
+                    return {"sessionId": params["sessionId"]}
+                return await original_request(method, params)
+
+            client._client.request = mock_request
+            await client.resume_session(
+                session.session_id,
+                {"on_permission_request": PermissionHandler.approve_all},
+            )
+            assert session_registered_during_rpc["value"] is True
+        finally:
+            await client.force_stop()
+
+    @pytest.mark.asyncio
+    async def test_create_session_cleans_up_on_rpc_failure(self):
+        client = CopilotClient({"cli_path": CLI_PATH})
+        await client.start()
+
+        try:
+            original_request = client._client.request
+
+            async def mock_request(method, params):
+                if method == "session.create":
+                    raise RuntimeError("RPC failed")
+                return await original_request(method, params)
+
+            client._client.request = mock_request
+            with pytest.raises(RuntimeError, match="RPC failed"):
+                await client.create_session(
+                    {"on_permission_request": PermissionHandler.approve_all}
+                )
+            with client._sessions_lock:
+                assert len(client._sessions) == 0
+        finally:
+            client._client.request = original_request
+            await client.force_stop()
+
+    @pytest.mark.asyncio
+    async def test_resume_session_cleans_up_on_rpc_failure(self):
+        client = CopilotClient({"cli_path": CLI_PATH})
+        await client.start()
+
+        try:
+            session = await client.create_session(
+                {"on_permission_request": PermissionHandler.approve_all}
+            )
+            with client._sessions_lock:
+                sessions_before = len(client._sessions)
+
+            original_request = client._client.request
+
+            async def mock_request(method, params):
+                if method == "session.resume":
+                    raise RuntimeError("RPC failed")
+                return await original_request(method, params)
+
+            client._client.request = mock_request
+            with pytest.raises(RuntimeError, match="RPC failed"):
+                await client.resume_session(
+                    "other-session-id",
+                    {"on_permission_request": PermissionHandler.approve_all},
+                )
+            with client._sessions_lock:
+                assert len(client._sessions) == sessions_before
+                assert session.session_id in client._sessions
+        finally:
+            await client.force_stop()
+
+
 class TestOverridesBuiltInTool:
     @pytest.mark.asyncio
     async def test_overrides_built_in_tool_sent_in_tool_definition(self):

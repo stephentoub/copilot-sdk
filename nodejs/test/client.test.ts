@@ -294,6 +294,94 @@ describe("CopilotClient", () => {
         });
     });
 
+    describe("session registered before RPC", () => {
+        it("registers session in sessions map before session.create RPC completes", async () => {
+            const client = new CopilotClient();
+            await client.start();
+            onTestFinished(() => client.forceStop());
+
+            let sessionInMapDuringRpc = false;
+            vi.spyOn((client as any).connection!, "sendRequest").mockImplementation(
+                async (method: string, params: any) => {
+                    if (method === "session.create") {
+                        sessionInMapDuringRpc = (client as any).sessions.has(params.sessionId);
+                        return { sessionId: params.sessionId };
+                    }
+                    throw new Error(`Unexpected method: ${method}`);
+                }
+            );
+
+            await client.createSession({ onPermissionRequest: approveAll });
+            expect(sessionInMapDuringRpc).toBe(true);
+        });
+
+        it("registers session in sessions map before session.resume RPC completes", async () => {
+            const client = new CopilotClient();
+            await client.start();
+            onTestFinished(() => client.forceStop());
+
+            const session = await client.createSession({ onPermissionRequest: approveAll });
+
+            let sessionInMapDuringRpc = false;
+            vi.spyOn((client as any).connection!, "sendRequest").mockImplementation(
+                async (method: string, params: any) => {
+                    if (method === "session.resume") {
+                        sessionInMapDuringRpc = (client as any).sessions.has(params.sessionId);
+                        return { sessionId: params.sessionId };
+                    }
+                    throw new Error(`Unexpected method: ${method}`);
+                }
+            );
+
+            await client.resumeSession(session.sessionId, { onPermissionRequest: approveAll });
+            expect(sessionInMapDuringRpc).toBe(true);
+        });
+
+        it("removes session from sessions map when session.create RPC fails", async () => {
+            const client = new CopilotClient();
+            await client.start();
+            onTestFinished(() => client.forceStop());
+
+            vi.spyOn((client as any).connection!, "sendRequest").mockImplementation(
+                async (method: string) => {
+                    if (method === "session.create") {
+                        throw new Error("RPC failed");
+                    }
+                    throw new Error(`Unexpected method: ${method}`);
+                }
+            );
+
+            await expect(client.createSession({ onPermissionRequest: approveAll })).rejects.toThrow(
+                "RPC failed"
+            );
+            expect((client as any).sessions.size).toBe(0);
+        });
+
+        it("removes session from sessions map when session.resume RPC fails", async () => {
+            const client = new CopilotClient();
+            await client.start();
+            onTestFinished(() => client.forceStop());
+
+            const session = await client.createSession({ onPermissionRequest: approveAll });
+            const sessionCountBefore = (client as any).sessions.size;
+
+            vi.spyOn((client as any).connection!, "sendRequest").mockImplementation(
+                async (method: string) => {
+                    if (method === "session.resume") {
+                        throw new Error("RPC failed");
+                    }
+                    throw new Error(`Unexpected method: ${method}`);
+                }
+            );
+
+            await expect(
+                client.resumeSession("other-session-id", { onPermissionRequest: approveAll })
+            ).rejects.toThrow("RPC failed");
+            expect((client as any).sessions.size).toBe(sessionCountBefore);
+            expect((client as any).sessions.has(session.sessionId)).toBe(true);
+        });
+    });
+
     describe("overridesBuiltInTool in tool definitions", () => {
         it("sends overridesBuiltInTool in tool definition on session.create", async () => {
             const client = new CopilotClient();

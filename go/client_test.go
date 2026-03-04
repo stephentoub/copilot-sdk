@@ -1,13 +1,18 @@
 package copilot
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sync"
 	"testing"
+
+	"github.com/github/copilot-sdk/go/internal/jsonrpc2"
 )
 
 // This file is for unit tests. Where relevant, prefer to add e2e tests in e2e/*.test.go instead
@@ -567,5 +572,232 @@ func TestClient_StartStopRace(t *testing.T) {
 	close(errChan)
 	if err := <-errChan; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeJSONRPCServer reads one JSON-RPC request from r and sends a response to w.
+// onRequest is called with the parsed method and params before the response is sent,
+// allowing the caller to inspect state (e.g. the sessions map) during the RPC.
+func fakeJSONRPCServer(t *testing.T, r io.Reader, w io.WriteCloser, onRequest func(method string, params json.RawMessage)) {
+	t.Helper()
+	reader := bufio.NewReader(r)
+
+	// Read Content-Length header
+	var contentLength int
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Errorf("failed to read header: %v", err)
+			w.Close()
+			return
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+		fmt.Sscanf(line, "Content-Length: %d", &contentLength)
+	}
+
+	// Read body
+	body := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		t.Errorf("failed to read body: %v", err)
+		w.Close()
+		return
+	}
+
+	// Parse request
+	var req struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Errorf("failed to unmarshal request: %v", err)
+		w.Close()
+		return
+	}
+
+	onRequest(req.Method, req.Params)
+
+	// Echo sessionId from request params
+	var params struct {
+		SessionID string `json:"sessionId"`
+	}
+	json.Unmarshal(req.Params, &params)
+
+	result, _ := json.Marshal(map[string]any{"sessionId": params.SessionID, "workspacePath": "/tmp"})
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req.ID,
+		"result":  json.RawMessage(result),
+	})
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(resp))
+	w.Write([]byte(header))
+	w.Write(resp)
+}
+
+// fakeJSONRPCErrorServer reads one JSON-RPC request and returns an error response.
+func fakeJSONRPCErrorServer(t *testing.T, r io.Reader, w io.WriteCloser) {
+	t.Helper()
+	reader := bufio.NewReader(r)
+
+	var contentLength int
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			w.Close()
+			return
+		}
+		if line == "\r\n" || line == "\n" {
+			break
+		}
+		fmt.Sscanf(line, "Content-Length: %d", &contentLength)
+	}
+
+	body := make([]byte, contentLength)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		w.Close()
+		return
+	}
+
+	var req struct {
+		ID json.RawMessage `json:"id"`
+	}
+	json.Unmarshal(body, &req)
+
+	resp, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      req.ID,
+		"error":   map[string]any{"code": -32000, "message": "test error"},
+	})
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(resp))
+	w.Write([]byte(header))
+	w.Write(resp)
+}
+
+// newTestClientWithFakeServer creates a Client wired to a fake jsonrpc2.Client
+// backed by the provided io pipes. The caller must call jrpcClient.Stop() when done.
+func newTestClientWithFakeServer(clientWriter io.WriteCloser, clientReader io.ReadCloser) (*Client, *jsonrpc2.Client) {
+	jrpcClient := jsonrpc2.NewClient(clientWriter, clientReader)
+	jrpcClient.Start()
+
+	client := NewClient(nil)
+	client.client = jrpcClient
+	client.state = StateConnected
+	client.sessions = make(map[string]*Session)
+	return client, jrpcClient
+}
+
+func TestClient_CreateSession_RegistersSessionBeforeRPC(t *testing.T) {
+	// Create pipes: client writes to serverReader, server writes to clientReader
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client, jrpcClient := newTestClientWithFakeServer(clientWriter, clientReader)
+	defer jrpcClient.Stop()
+
+	sessionInMap := false
+	go fakeJSONRPCServer(t, serverReader, serverWriter, func(method string, params json.RawMessage) {
+		if method != "session.create" {
+			t.Errorf("expected session.create, got %s", method)
+		}
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		json.Unmarshal(params, &p)
+		client.sessionsMux.Lock()
+		_, sessionInMap = client.sessions[p.SessionID]
+		client.sessionsMux.Unlock()
+	})
+
+	session, err := client.CreateSession(t.Context(), &SessionConfig{
+		OnPermissionRequest: PermissionHandler.ApproveAll,
+	})
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+	if session == nil {
+		t.Fatal("expected non-nil session")
+	}
+	if !sessionInMap {
+		t.Error("session was not in sessions map when session.create RPC was issued")
+	}
+}
+
+func TestClient_ResumeSession_RegistersSessionBeforeRPC(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client, jrpcClient := newTestClientWithFakeServer(clientWriter, clientReader)
+	defer jrpcClient.Stop()
+
+	sessionInMap := false
+	go fakeJSONRPCServer(t, serverReader, serverWriter, func(method string, params json.RawMessage) {
+		if method != "session.resume" {
+			t.Errorf("expected session.resume, got %s", method)
+		}
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		json.Unmarshal(params, &p)
+		client.sessionsMux.Lock()
+		_, sessionInMap = client.sessions[p.SessionID]
+		client.sessionsMux.Unlock()
+	})
+
+	session, err := client.ResumeSessionWithOptions(t.Context(), "test-session-id", &ResumeSessionConfig{
+		OnPermissionRequest: PermissionHandler.ApproveAll,
+	})
+	if err != nil {
+		t.Fatalf("ResumeSessionWithOptions failed: %v", err)
+	}
+	if session == nil {
+		t.Fatal("expected non-nil session")
+	}
+	if !sessionInMap {
+		t.Error("session was not in sessions map when session.resume RPC was issued")
+	}
+}
+
+func TestClient_CreateSession_CleansUpOnRPCFailure(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client, jrpcClient := newTestClientWithFakeServer(clientWriter, clientReader)
+	defer jrpcClient.Stop()
+
+	// Send a JSON-RPC error response to simulate failure
+	go fakeJSONRPCErrorServer(t, serverReader, serverWriter)
+
+	_, err := client.CreateSession(t.Context(), &SessionConfig{
+		OnPermissionRequest: PermissionHandler.ApproveAll,
+	})
+	if err == nil {
+		t.Fatal("expected error from CreateSession")
+	}
+	client.sessionsMux.Lock()
+	count := len(client.sessions)
+	client.sessionsMux.Unlock()
+	if count != 0 {
+		t.Errorf("expected 0 sessions after failed create, got %d", count)
+	}
+}
+
+func TestClient_ResumeSession_CleansUpOnRPCFailure(t *testing.T) {
+	serverReader, clientWriter := io.Pipe()
+	clientReader, serverWriter := io.Pipe()
+	client, jrpcClient := newTestClientWithFakeServer(clientWriter, clientReader)
+	defer jrpcClient.Stop()
+
+	go fakeJSONRPCErrorServer(t, serverReader, serverWriter)
+
+	_, err := client.ResumeSessionWithOptions(t.Context(), "test-session-id", &ResumeSessionConfig{
+		OnPermissionRequest: PermissionHandler.ApproveAll,
+	})
+	if err == nil {
+		t.Fatal("expected error from ResumeSessionWithOptions")
+	}
+	client.sessionsMux.Lock()
+	count := len(client.sessions)
+	client.sessionsMux.Unlock()
+	if count != 0 {
+		t.Errorf("expected 0 sessions after failed resume, got %d", count)
 	}
 }

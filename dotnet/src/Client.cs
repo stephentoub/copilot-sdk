@@ -381,33 +381,11 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
             config.Hooks.OnSessionEnd != null ||
             config.Hooks.OnErrorOccurred != null);
 
-        var request = new CreateSessionRequest(
-            config.Model,
-            config.SessionId,
-            config.ClientName,
-            config.ReasoningEffort,
-            config.Tools?.Select(ToolDefinition.FromAIFunction).ToList(),
-            config.SystemMessage,
-            config.AvailableTools,
-            config.ExcludedTools,
-            config.Provider,
-            (bool?)true,
-            config.OnUserInputRequest != null ? true : null,
-            hasHooks ? true : null,
-            config.WorkingDirectory,
-            config.Streaming is true ? true : null,
-            config.McpServers,
-            "direct",
-            config.CustomAgents,
-            config.ConfigDir,
-            config.SkillDirectories,
-            config.DisabledSkills,
-            config.InfiniteSessions);
+        var sessionId = config.SessionId ?? Guid.NewGuid().ToString();
 
-        var response = await InvokeRpcAsync<CreateSessionResponse>(
-            connection.Rpc, "session.create", [request], cancellationToken);
-
-        var session = new CopilotSession(response.SessionId, connection.Rpc, response.WorkspacePath);
+        // Create and register the session before issuing the RPC so that
+        // events emitted by the CLI (e.g. session.start) are not dropped.
+        var session = new CopilotSession(sessionId, connection.Rpc);
         session.RegisterTools(config.Tools ?? []);
         session.RegisterPermissionHandler(config.OnPermissionRequest);
         if (config.OnUserInputRequest != null)
@@ -418,10 +396,42 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         {
             session.RegisterHooks(config.Hooks);
         }
+        _sessions[sessionId] = session;
 
-        if (!_sessions.TryAdd(response.SessionId, session))
+        try
         {
-            throw new InvalidOperationException($"Session {response.SessionId} already exists");
+            var request = new CreateSessionRequest(
+                config.Model,
+                sessionId,
+                config.ClientName,
+                config.ReasoningEffort,
+                config.Tools?.Select(ToolDefinition.FromAIFunction).ToList(),
+                config.SystemMessage,
+                config.AvailableTools,
+                config.ExcludedTools,
+                config.Provider,
+                (bool?)true,
+                config.OnUserInputRequest != null ? true : null,
+                hasHooks ? true : null,
+                config.WorkingDirectory,
+                config.Streaming is true ? true : null,
+                config.McpServers,
+                "direct",
+                config.CustomAgents,
+                config.ConfigDir,
+                config.SkillDirectories,
+                config.DisabledSkills,
+                config.InfiniteSessions);
+
+            var response = await InvokeRpcAsync<CreateSessionResponse>(
+                connection.Rpc, "session.create", [request], cancellationToken);
+
+            session.WorkspacePath = response.WorkspacePath;
+        }
+        catch
+        {
+            _sessions.TryRemove(sessionId, out _);
+            throw;
         }
 
         return session;
@@ -472,34 +482,9 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
             config.Hooks.OnSessionEnd != null ||
             config.Hooks.OnErrorOccurred != null);
 
-        var request = new ResumeSessionRequest(
-            sessionId,
-            config.ClientName,
-            config.Model,
-            config.ReasoningEffort,
-            config.Tools?.Select(ToolDefinition.FromAIFunction).ToList(),
-            config.SystemMessage,
-            config.AvailableTools,
-            config.ExcludedTools,
-            config.Provider,
-            (bool?)true,
-            config.OnUserInputRequest != null ? true : null,
-            hasHooks ? true : null,
-            config.WorkingDirectory,
-            config.ConfigDir,
-            config.DisableResume is true ? true : null,
-            config.Streaming is true ? true : null,
-            config.McpServers,
-            "direct",
-            config.CustomAgents,
-            config.SkillDirectories,
-            config.DisabledSkills,
-            config.InfiniteSessions);
-
-        var response = await InvokeRpcAsync<ResumeSessionResponse>(
-            connection.Rpc, "session.resume", [request], cancellationToken);
-
-        var session = new CopilotSession(response.SessionId, connection.Rpc, response.WorkspacePath);
+        // Create and register the session before issuing the RPC so that
+        // events emitted by the CLI (e.g. session.start) are not dropped.
+        var session = new CopilotSession(sessionId, connection.Rpc);
         session.RegisterTools(config.Tools ?? []);
         session.RegisterPermissionHandler(config.OnPermissionRequest);
         if (config.OnUserInputRequest != null)
@@ -510,9 +495,45 @@ public partial class CopilotClient : IDisposable, IAsyncDisposable
         {
             session.RegisterHooks(config.Hooks);
         }
+        _sessions[sessionId] = session;
 
-        // Replace any existing session entry to ensure new config (like permission handler) is used
-        _sessions[response.SessionId] = session;
+        try
+        {
+            var request = new ResumeSessionRequest(
+                sessionId,
+                config.ClientName,
+                config.Model,
+                config.ReasoningEffort,
+                config.Tools?.Select(ToolDefinition.FromAIFunction).ToList(),
+                config.SystemMessage,
+                config.AvailableTools,
+                config.ExcludedTools,
+                config.Provider,
+                (bool?)true,
+                config.OnUserInputRequest != null ? true : null,
+                hasHooks ? true : null,
+                config.WorkingDirectory,
+                config.ConfigDir,
+                config.DisableResume is true ? true : null,
+                config.Streaming is true ? true : null,
+                config.McpServers,
+                "direct",
+                config.CustomAgents,
+                config.SkillDirectories,
+                config.DisabledSkills,
+                config.InfiniteSessions);
+
+            var response = await InvokeRpcAsync<ResumeSessionResponse>(
+                connection.Rpc, "session.resume", [request], cancellationToken);
+
+            session.WorkspacePath = response.WorkspacePath;
+        }
+        catch
+        {
+            _sessions.TryRemove(sessionId, out _);
+            throw;
+        }
+
         return session;
     }
 
