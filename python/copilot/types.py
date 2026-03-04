@@ -511,7 +511,9 @@ class SessionConfig(TypedDict, total=False):
     # session.create RPC is issued, ensuring early events (e.g. session.start)
     # are delivered. Equivalent to calling session.on(handler) immediately
     # after creation, but executes earlier in the lifecycle so no events are missed.
-    on_event: Callable[["SessionEvent"], None]
+    on_event: Callable[[SessionEvent], None]
+
+
 class AzureProviderOptions(TypedDict, total=False):
     """Azure-specific provider configuration"""
 
@@ -577,7 +579,7 @@ class ResumeSessionConfig(TypedDict, total=False):
     disable_resume: bool
     # Optional event handler registered before the session.resume RPC is issued,
     # ensuring early events are delivered. See SessionConfig.on_event.
-    on_event: Callable[["SessionEvent"], None]
+    on_event: Callable[[SessionEvent], None]
 
 
 # Options for sending a message to a session
