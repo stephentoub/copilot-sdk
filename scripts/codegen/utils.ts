@@ -56,6 +56,15 @@ export function postProcessSchema(schema: JSONSchema7): JSONSchema7 {
 
     const processed: JSONSchema7 = { ...schema };
 
+    // Normalize $defs → definitions for draft 2019+ compatibility
+    if ("$defs" in processed && !processed.definitions) {
+        processed.definitions = (processed as Record<string, unknown>).$defs as Record<
+            string,
+            JSONSchema7Definition
+        >;
+        delete (processed as Record<string, unknown>).$defs;
+    }
+
     if ("const" in processed && typeof processed.const === "boolean") {
         processed.enum = [processed.const];
         delete processed.const;
@@ -129,10 +138,38 @@ export interface RpcMethod {
 }
 
 export interface ApiSchema {
+    definitions?: Record<string, JSONSchema7Definition>;
+    $defs?: Record<string, JSONSchema7Definition>;
     server?: Record<string, unknown>;
     session?: Record<string, unknown>;
 }
 
 export function isRpcMethod(node: unknown): node is RpcMethod {
     return typeof node === "object" && node !== null && "rpcMethod" in node;
+}
+
+// ── $ref resolution ─────────────────────────────────────────────────────────
+
+/** Extract the type name from a `$ref` path (e.g. "#/definitions/Model" → "Model"). */
+export function refTypeName(ref: string): string {
+    return ref.split("/").pop()!;
+}
+
+/** Resolve a `$ref` path against a definitions map, returning the referenced schema. */
+export function resolveRef(
+    ref: string,
+    definitions: Record<string, JSONSchema7Definition> | undefined
+): JSONSchema7 | undefined {
+    const match = ref.match(/^#\/(definitions|\$defs)\/(.+)$/);
+    if (!match || !definitions) return undefined;
+    const def = definitions[match[2]];
+    return typeof def === "object" ? (def as JSONSchema7) : undefined;
+}
+
+/** Collect the shared definitions from a schema (handles both `definitions` and `$defs`). */
+export function collectDefinitions(
+    schema: Record<string, unknown>
+): Record<string, JSONSchema7Definition> {
+    const defs = (schema.definitions ?? schema.$defs ?? {}) as Record<string, JSONSchema7Definition>;
+    return { ...defs };
 }

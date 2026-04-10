@@ -14,6 +14,7 @@ import {
     getApiSchemaPath,
     postProcessSchema,
     writeGeneratedFile,
+    collectDefinitions,
     isRpcMethod,
     type ApiSchema,
     type RpcMethod,
@@ -102,11 +103,20 @@ async function generateSessionEvents(schemaPath?: string): Promise<void> {
 
     const resolvedPath = schemaPath ?? (await getSessionEventsSchemaPath());
     const schema = JSON.parse(await fs.readFile(resolvedPath, "utf-8")) as JSONSchema7;
-    const resolvedSchema = (schema.definitions?.SessionEvent as JSONSchema7) || schema;
-    const processed = postProcessSchema(resolvedSchema);
+    const processed = postProcessSchema(schema);
+
+    // Extract SessionEvent as root but keep all other definitions for $ref resolution
+    const sessionEventDef = (processed.definitions?.SessionEvent as JSONSchema7) || processed;
+    const otherDefs = Object.fromEntries(
+        Object.entries(processed.definitions || {}).filter(([key]) => key !== "SessionEvent")
+    );
+    const schemaForQuicktype: JSONSchema7 = {
+        ...sessionEventDef,
+        ...(Object.keys(otherDefs).length > 0 ? { definitions: otherDefs } : {}),
+    };
 
     const schemaInput = new JSONSchemaInput(new FetchingJSONSchemaStore());
-    await schemaInput.addSource({ name: "SessionEvent", schema: JSON.stringify(processed) });
+    await schemaInput.addSource({ name: "SessionEvent", schema: JSON.stringify(schemaForQuicktype) });
 
     const inputData = new InputData();
     inputData.addInput(schemaInput);
@@ -161,10 +171,11 @@ async function generateRpc(schemaPath?: string): Promise<void> {
 
     const allMethods = [...collectRpcMethods(schema.server || {}), ...collectRpcMethods(schema.session || {})];
 
-    // Build a combined schema for quicktype
+    // Build a combined schema for quicktype, including shared definitions from the API schema
+    const sharedDefs = collectDefinitions(schema as Record<string, unknown>);
     const combinedSchema: JSONSchema7 = {
         $schema: "http://json-schema.org/draft-07/schema#",
-        definitions: {},
+        definitions: { ...sharedDefs },
     };
 
     for (const method of allMethods) {
@@ -190,10 +201,14 @@ async function generateRpc(schemaPath?: string): Promise<void> {
         }
     }
 
-    // Generate types via quicktype
+    // Generate types via quicktype — include all definitions in each source for $ref resolution
     const schemaInput = new JSONSchemaInput(new FetchingJSONSchemaStore());
     for (const [name, def] of Object.entries(combinedSchema.definitions!)) {
-        await schemaInput.addSource({ name, schema: JSON.stringify(def) });
+        const schemaWithDefs: JSONSchema7 = {
+            ...(typeof def === "object" ? (def as JSONSchema7) : {}),
+            definitions: combinedSchema.definitions,
+        };
+        await schemaInput.addSource({ name, schema: JSON.stringify(schemaWithDefs) });
     }
 
     const inputData = new InputData();

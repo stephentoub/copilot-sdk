@@ -14,6 +14,7 @@ import {
     getApiSchemaPath,
     postProcessSchema,
     writeGeneratedFile,
+    collectDefinitions,
     isRpcMethod,
     type ApiSchema,
     type RpcMethod,
@@ -86,22 +87,37 @@ import type { MessageConnection } from "vscode-jsonrpc/node.js";
 
     const allMethods = [...collectRpcMethods(schema.server || {}), ...collectRpcMethods(schema.session || {})];
 
+    // Build a single combined schema with shared definitions and all method types.
+    // This ensures $ref-referenced types are generated exactly once.
+    const sharedDefs = collectDefinitions(schema as Record<string, unknown>);
+    const combinedSchema: JSONSchema7 = {
+        $schema: "http://json-schema.org/draft-07/schema#",
+        type: "object",
+        definitions: { ...sharedDefs },
+    };
+
     for (const method of allMethods) {
-        const compiled = await compile(method.result, resultTypeName(method.rpcMethod), {
-            bannerComment: "",
-            additionalProperties: false,
-        });
-        lines.push(compiled.trim());
-        lines.push("");
+        combinedSchema.definitions![resultTypeName(method.rpcMethod)] = method.result;
 
         if (method.params?.properties && Object.keys(method.params.properties).length > 0) {
-            const paramsCompiled = await compile(method.params, paramsTypeName(method.rpcMethod), {
-                bannerComment: "",
-                additionalProperties: false,
-            });
-            lines.push(paramsCompiled.trim());
-            lines.push("");
+            combinedSchema.definitions![paramsTypeName(method.rpcMethod)] = method.params;
         }
+    }
+
+    const compiled = await compile(combinedSchema, "_RpcSchemaRoot", {
+        bannerComment: "",
+        additionalProperties: false,
+        unreachableDefinitions: true,
+    });
+
+    // Strip the placeholder root type and keep only the definition-generated types
+    const strippedTs = compiled
+        .replace(/export interface _RpcSchemaRoot\s*\{[^}]*\}\s*/g, "")
+        .trim();
+
+    if (strippedTs) {
+        lines.push(strippedTs);
+        lines.push("");
     }
 
     // Generate factory functions
